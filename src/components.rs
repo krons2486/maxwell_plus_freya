@@ -50,7 +50,7 @@ import_image!(Source, "../assets/images/source.png", {
     height: "100%"
 });
 
-import_image!(Probe, "../assets/images/source.png", {
+import_image!(Probe, "../assets/images/x.png", {
     width: "100%",
     height: "100%"
 });
@@ -80,7 +80,7 @@ import_image!(Signals, "../assets/images/signals.png", {
     height: "100%"
 });
 
-// Компонент: AppTheme (основные стили)
+// AppTheme (основные стили)
 #[component]
 pub fn AppTheme(children: Element) -> Element {
     rsx!(
@@ -95,7 +95,6 @@ pub fn AppTheme(children: Element) -> Element {
     )
 }
 
-// Компонент: MenuBar с кастомными кнопками
 #[component]
 pub fn MenuBar(open_dropdown: Signal<String>) -> Element {
     let menus = vec!["Файл", "Правка", "Объекты", "Параметры", "Окно", "Справка"];
@@ -129,11 +128,11 @@ pub fn MenuBar(open_dropdown: Signal<String>) -> Element {
     )
 }
 
-// ButtonBar: use flex layout to center icons
 #[component]
 pub fn ButtonBar(
     active_tab: Signal<String>,
     draw_rect_mode: Signal<bool>,
+    on_open: EventHandler<MouseEvent>,
 ) -> Element {
     rsx!(
         rect {
@@ -148,7 +147,7 @@ pub fn ButtonBar(
             ButtonIcon {
                 tooltip: "Open Folder".to_string(),
                 icon: rsx!(OpenedFolder {}),
-                onclick: move |_| println!("Open Folder clicked"),
+                onclick: on_open.clone(),
             }
             // Сохранить
             ButtonIcon {
@@ -202,7 +201,6 @@ pub fn ButtonBar(
     )
 }
 
-// Вспомогательный компонент ButtonIcon
 #[component]
 pub fn ButtonIcon(
     tooltip: String,
@@ -220,7 +218,6 @@ pub fn ButtonIcon(
     )
 }
 
-// Компонент: TabsContent
 #[component]
 pub fn TabsContent(
     active_tab: Signal<String>,
@@ -263,7 +260,6 @@ pub fn TabsContent(
     )
 }
 
-// Переименованный компонент Sidebar -> MySidebar
 #[component]
 pub fn MySidebar() -> Element {
     rsx!(
@@ -277,7 +273,6 @@ pub fn MySidebar() -> Element {
     )
 }
 
-// Компонент: TreeView
 #[component]
 pub fn TreeView() -> Element {
     let items = vec![
@@ -298,7 +293,6 @@ pub fn TreeView() -> Element {
     )
 }
 
-// Компонент: TreeItem (исправлена ошибка заимствования)
 #[component]
 pub fn TreeItem(title: String, items: Vec<&'static str>) -> Element {
     let mut expanded = use_signal(|| true);
@@ -314,7 +308,7 @@ pub fn TreeItem(title: String, items: Vec<&'static str>) -> Element {
                     expanded.set(!current);
                 },
                 label {
-                    if *expanded.read() { "▼ " } else { "▶ " }
+                    if *expanded.read() { "▽ " } else { "▷ " }
                     "{title}"
                 }
             }
@@ -336,7 +330,6 @@ pub fn TreeItem(title: String, items: Vec<&'static str>) -> Element {
     )
 }
 
-// TabsBar и содержимое
 #[component]
 pub fn TabsBar(active_tab: Signal<String>) -> Element {
     let tabs = [ ("Геометрия","geometry"),("Поле","field"),("Временные сигналы","signals") ];
@@ -352,7 +345,6 @@ pub fn TabsBar(active_tab: Signal<String>) -> Element {
     )
 }
 
-// Компонент: CanvasDrawArea с исправлениями
 #[component]
 pub fn CanvasDrawArea(
     draw_rect_mode: Signal<bool>,
@@ -367,7 +359,7 @@ pub fn CanvasDrawArea(
     // Сигнал выбранного прямоугольника
     let selected = use_signal(|| None::<usize>);
 
-    // --- onclick: рисуем или выбираем ---
+    // onclick: рисуем или выбираем
     let onclick = {
         // клонируем handles, которые будем менять
         let mut sel = selected.clone();
@@ -409,7 +401,7 @@ pub fn CanvasDrawArea(
         }
     };
 
-    // --- onkeydown: удаляем по Delete/Backspace ---
+    // onkeydown: удаляем по Delete/Backspace
     let onkey = {
         let mut rects = rectangles.clone();
         let mut sel  = selected.clone();
@@ -422,7 +414,6 @@ pub fn CanvasDrawArea(
                 // сначала считываем индекс в локальную переменную
                 let sel_idx = *sel.read();
                 if let Some(idx) = sel_idx {
-                    // уже нет borrow от sel.read()
                     let mut v = rects.read().clone();
                     if idx < v.len() {
                         v.remove(idx);
@@ -437,7 +428,7 @@ pub fn CanvasDrawArea(
         }
     };
 
-    // --- Canvas: перерисовываем при изменении прямоугольников или выделения ---
+    // Canvas: перерисовываем при изменении прямоугольников или выделения
     let canvas_ref = use_canvas_with_deps(
         &(rectangles(), selected()),
         move |(rects_snapshot, sel_opt)| {
@@ -507,7 +498,6 @@ pub fn CanvasDrawArea(
     )
 }
 
-// Компонент: Footer
 #[component]
 pub fn Footer() -> Element {
     let stats = ["Текущий шаг:", "Гармоника", "TM", "Ez", "Лин.", "Полное поле"];
