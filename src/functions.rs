@@ -62,24 +62,20 @@ pub fn load_config(path: impl AsRef<std::path::Path>) -> anyhow::Result<Config> 
     Ok(cfg)
 }
 
-/// Конвертирует список прямоугольников из метров → пиксели
-pub fn rectangles_m_to_px(
+/// Конвертирует список прямоугольников из метров -> нормализованные координаты (0..1)
+pub fn rectangles_m_to_normalized(
     rects_m: &[RectangleDef],
-    canvas_w: f32,
-    canvas_h: f32,
     sizex: f32,
     sizey: f32,
 ) -> Vec<((f32, f32), (f32, f32))> {
-    let sx = canvas_w / sizex;
-    let sy = canvas_h / sizey;
     rects_m
         .iter()
         .map(|r| {
-            let px1 = r.x1 * sx;
-            let py1 = r.y1 * sy;
-            let px2 = r.x2 * sx;
-            let py2 = r.y2 * sy;
-            ((px1, py1), (px2, py2))
+            let nx1 = r.x1 / sizex;
+            let ny1 = r.y1 / sizey;
+            let nx2 = r.x2 / sizex;
+            let ny2 = r.y2 / sizey;
+            ((nx1, ny1), (nx2, ny2))
         })
         .collect()
 }

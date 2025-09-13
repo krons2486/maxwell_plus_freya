@@ -5,14 +5,18 @@ authors = ["krons2486 <vladk.711@gmail.com>"]
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[features]
+plot = ["freya/plot"]
 
 [dependencies]
-freya = "0.3.4"
+freya = { git = "https://github.com/marc2332/freya.git", branch = "main", package = "freya", features = ["plot"]}
 dioxus = { version = "0.6", features = ["macro", "hooks"], default-features = true }
-freya-core = "0.3.4"
-skia-safe = { version = "0.82.0", features = ["gpu"]} 
+freya-core = { git = "https://github.com/marc2332/freya.git", branch = "main", package = "freya-core" }
+skia-safe = { version = "0.87.0", features = ["gpu"]} 
 dioxus-hooks = "0.6.2"
 serde = "1.0.219"
 rfd = "0.15.4"
 anyhow = "1.0.98"
 toml = "0.9.2"
+plotters = "0.3.7"
+skia-plotters-backend = "0.1.0"
