@@ -4,7 +4,7 @@ use freya::{
             chart::ChartBuilder,
             prelude::{IntoDrawingArea, IntoLinspace, PathElement, DiscreteRanged},
             series::LineSeries,
-            style::{BLACK, BLUE, WHITE},
+            style::{BLUE, WHITE},
         },
         SkiaBackend,
     },

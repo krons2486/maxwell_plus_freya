@@ -50,6 +50,7 @@ pub struct GeometrySection {
 #[derive(Debug, Deserialize)]
 pub struct Config {
     #[serde(default)]
+    #[allow(dead_code)]
     pub description: Option<String>,
     pub modelling: Modelling,
     pub geometry: GeometrySection,
