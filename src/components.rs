@@ -4,7 +4,7 @@ use freya::{
             chart::ChartBuilder,
             prelude::{IntoDrawingArea, IntoLinspace, PathElement, DiscreteRanged},
             series::LineSeries,
-            style::{BLACK, BLUE, WHITE},
+            style::{BLUE, WHITE},
         },
         SkiaBackend,
     },
@@ -13,6 +13,7 @@ use freya::{
     hooks::{use_canvas, use_focus, use_canvas_with_deps},
 };
 use skia_safe::{Color, Paint, Rect};
+use std::sync::Arc;
 use std::f64::consts::PI;
 
 // Импорт изображений
@@ -234,7 +235,7 @@ pub fn TabsContent(
     active_tab: Signal<String>,
     draw_rect_mode: Signal<bool>,
     first_point: Signal<Option<(f32, f32)>>,
-    rectangles: Signal<Vec<((f32, f32), (f32, f32))>>,
+    rectangles: Signal<Arc<Vec<((f32, f32), (f32, f32))>>>,
     //sources: Signal<Vec<(f32, f32)>>,
     //probes: Signal<Vec<(f32, f32)>>,
 ) -> Element {
@@ -364,7 +365,7 @@ pub fn TabsBar(active_tab: Signal<String>) -> Element {
 pub fn CanvasDrawArea(
     draw_rect_mode: Signal<bool>,
     first_point: Signal<Option<(f32, f32)>>,
-    rectangles: Signal<Vec<((f32, f32), (f32, f32))>>,
+    rectangles: Signal<Arc<Vec<((f32, f32), (f32, f32))>>>,
 ) -> Element {
     let platform = use_platform();
     let (reference, size) = use_node_signal();
@@ -405,9 +406,9 @@ pub fn CanvasDrawArea(
                 } else {
                     let p1 = first_point.read().unwrap();
                     // добавляем в сигнал rectangles (нормализованные)
-                    let mut v = rects.read().clone();
+                    let mut v = (*rects.read()).as_ref().clone();
                     v.push((p1, (nx, ny)));
-                    rects.set(v);
+                    rects.set(Arc::new(v));
                     first_point.set(None);
                     draw_rect_mode.set(false);
 
@@ -416,9 +417,10 @@ pub fn CanvasDrawArea(
                 }
             } else {
                 // режим выбора: ищем попавший прямоугольник
-                let rects_snapshot = rects.read().clone(); // работаем с копией, чтобы не держать read при set
+                // читаем без клонирования; set выполняем после завершения чтения
+                let rects_read = rects.read();
                 let mut found = None;
-                for (idx, &((x1, y1), (x2, y2))) in rects_snapshot.iter().enumerate() {
+                for (idx, &((x1, y1), (x2, y2))) in rects_read.iter().enumerate() {
                     let minx = x1.min(x2);
                     let maxx = x1.max(x2);
                     let miny = y1.min(y2);
@@ -447,10 +449,10 @@ pub fn CanvasDrawArea(
                 // сначала прочитаем индекс в локальную переменную (избежим одновременного borrow)
                 let sel_idx = *sel.read();
                 if let Some(idx) = sel_idx {
-                    let mut v = rects.read().clone();
+                    let mut v = (*rects.read()).as_ref().clone();
                     if idx < v.len() {
                         v.remove(idx);
-                        rects.set(v);
+                        rects.set(Arc::new(v));
                     }
                     sel.set(None);
                     platform.invalidate_drawing_area(size.peek().area);
@@ -463,7 +465,7 @@ pub fn CanvasDrawArea(
     // Canvas: перерисовываемся при изменении rectangles() или selected()
     let canvas_ref = use_canvas_with_deps(
         &(rectangles(), selected()),
-        move |(rects_snapshot, sel_opt): (Vec<((f32, f32),(f32,f32))>, Option<usize>)| {
+        move |(rects_snapshot, sel_opt): (Arc<Vec<((f32, f32),(f32,f32))>>, Option<usize>)| {
             platform.invalidate_drawing_area(size.peek().area);
             platform.request_animation_frame();
             move |ctx: &mut CanvasRunnerContext<'_>| {

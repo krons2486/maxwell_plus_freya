@@ -4,6 +4,7 @@ mod components;
 
 mod functions;
 use functions::{select_toml_file, load_config, rectangles_m_to_normalized};
+use std::sync::Arc;
 
 fn main() {
     launch(app);
@@ -15,7 +16,7 @@ fn app() -> Element {
     let active_tab     = use_signal(|| "geometry".to_string());
     let draw_rect_mode = use_signal(|| false);
     let first_point    = use_signal(|| None::<(f32, f32)>);
-    let rectangles     = use_signal(|| Vec::<((f32, f32),(f32, f32))>::new());
+    let rectangles     = use_signal(|| Arc::<Vec<((f32, f32),(f32, f32))>>::new(Vec::new()));
     let modelling      = use_signal(|| None::<functions::Modelling>);
 
     // Этот node сигнал привяжем к панели, где рисуем
@@ -44,7 +45,7 @@ fn app() -> Element {
                         println!("Холст (px): {:.0}×{:.0}; область (m): {}×{}", canvas_w, canvas_h, m.sizex, m.sizey);
 
                         // очищаем старые прямоугольники
-                        rectangles.set(vec![]);
+                        rectangles.set(Arc::new(Vec::new()));
 
                         // Конвертируем из метров в нормализованные (0..1) — НОВОЕ:
                         let normalized = rectangles_m_to_normalized(
@@ -56,7 +57,7 @@ fn app() -> Element {
                         println!("Прямоугольники (нормализованные): {:#?}", normalized);
 
                         // Устанавливаем нормализованные координаты — канва перерисует автоматически
-                        rectangles.set(normalized);
+                        rectangles.set(Arc::new(normalized));
                     }
                     Err(e) => {
                         eprintln!("Ошибка загрузки конфигурации: {:?}", e);
