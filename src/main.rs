@@ -15,8 +15,12 @@ fn app() -> Element {
     let open_dropdown  = use_signal(|| String::new());
     let active_tab     = use_signal(|| "geometry".to_string());
     let draw_rect_mode = use_signal(|| false);
+    let draw_source_mode = use_signal(|| false);
+    let draw_probe_mode = use_signal(|| false);
     let first_point    = use_signal(|| None::<(f32, f32)>);
     let rectangles     = use_signal(|| Arc::<Vec<((f32, f32),(f32, f32))>>::new(Vec::new()));
+    let sources        = use_signal(|| Arc::<Vec<(f32, f32)>>::new(Vec::new()));
+    let probes         = use_signal(|| Arc::<Vec<(f32, f32)>>::new(Vec::new()));
     let modelling      = use_signal(|| None::<functions::Modelling>);
 
     // Этот node сигнал привяжем к панели, где рисуем
@@ -69,10 +73,12 @@ fn app() -> Element {
 
     rsx!(
         rect { content:"flex", direction:"vertical", width:"100%", height:"100%",
-            MenuBar { open_dropdown }
+            MenuBar { open_dropdown: open_dropdown.clone() }
             ButtonBar {
                 active_tab: active_tab.clone(),
                 draw_rect_mode: draw_rect_mode.clone(),
+                draw_source_mode: draw_source_mode.clone(),
+                draw_probe_mode: draw_probe_mode.clone(),
                 on_open: on_open.clone()
             }
 
@@ -86,8 +92,12 @@ fn app() -> Element {
                                 TabsContent {
                                     active_tab: active_tab.clone(),
                                     draw_rect_mode: draw_rect_mode.clone(),
+                                    draw_source_mode: draw_source_mode.clone(),
+                                    draw_probe_mode: draw_probe_mode.clone(),
                                     first_point: first_point.clone(),
                                     rectangles: rectangles.clone(),
+                                    sources: sources.clone(),
+                                    probes: probes.clone(),
                                 }
                             }
                         }
