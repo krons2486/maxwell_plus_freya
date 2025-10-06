@@ -350,9 +350,9 @@ pub fn TreeItem(title: String, items: Vec<&'static str>) -> Element {
 pub fn TabsBar(active_tab: Signal<String>) -> Element {
     let tabs = [ ("Геометрия","geometry"),("Поле","field"),("Временные сигналы","signals") ];
     rsx!(
-        rect { content:"flex", direction:"horizontal", height:"100%", background:"rgb(240,240,240)", border:"1 solid #ccc",
+        rect { content:"flex", direction:"horizontal", width:"100%", height:"100%", background:"rgb(240,240,240)", border:"1 solid #ccc",
             for (label,id) in tabs {
-                rect { width:"flex(1)", main_align:"center", cross_align:"center",
+                rect { width:"flex(1)", height:"100%", main_align:"center", cross_align:"center",
                     background: if *active_tab.read()==id {"rgb(204,204,204)"} else {"rgb(240,240,240)"},
                     onclick:move |_| active_tab.set(id.to_string()), label { "{label}" }
                 }
@@ -546,6 +546,9 @@ pub fn SignalsGraph() -> Element {
     // (-1.0, -1.0) — означает «скрыть оверлей».
     let cursor = use_signal(|| (-1.0_f64, -1.0_f64));
 
+    // Примечание: для преобразования пикселей в координаты используем те же
+    // отступы, что и при построении графика (margin и области подписей).
+
     // Обработчик движения мыши: сохраняем пиксельные координаты курсора
     let on_move = {
         let mut cursor = cursor.clone();
@@ -593,30 +596,40 @@ pub fn SignalsGraph() -> Element {
             // заливаем фон
             backend.fill(&WHITE).ok();
 
-            // диапазоны графика
+            // диапазоны графика — симметричные относительно нуля
             let x_min = -PI;
             let x_max = PI;
             let y_min = -1.0;
             let y_max = 1.0;
 
-            // строим оси и график
-            let x_axis = (x_min..x_max).step(0.01);
-            let y_range = y_min..y_max;
-
+            // строим оси и график; оставляем поля под подписи
             let mut chart = ChartBuilder::on(&backend)
                 .margin(10)
-                .x_label_area_size(30)
-                .y_label_area_size(30)
-                .build_cartesian_2d(x_axis.clone(), y_range.clone())
+                .x_label_area_size(32)
+                .y_label_area_size(40)
+                .build_cartesian_2d(x_min..x_max, y_min..y_max)
                 .unwrap();
 
+            // сетка и подписи; гарантируем подпись нуля и центрирование
             chart
                 .configure_mesh()
                 .x_desc("x")
                 .y_desc("sin(x)")
+                .x_labels(9)
+                .y_labels(5)
+                .x_label_formatter(&|v| {
+                    // Явно подписываем ноль
+                    if v.abs() < 1e-9 { "0".to_string() } else { format!("{:.2}", v) }
+                })
                 .draw()
                 .unwrap();
 
+            // Границы plot-области вычисляются в обработчике ховера по тем же отступам
+
+            // убрали дополнительные линии по нулю — оси будут только в сетке
+
+            // сам график
+            let x_axis = (x_min..x_max).step(0.01);
             chart
                 .draw_series(LineSeries::new(
                     x_axis.clone().values().map(|x| (x, x.sin())),
@@ -624,7 +637,6 @@ pub fn SignalsGraph() -> Element {
                 ))
                 .unwrap()
                 .label("sin(x)")
-                // <<< здесь используем целочисленное смещение 20 (i32)
                 .legend(|(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], &BLUE));
 
             chart.configure_series_labels().draw().unwrap();
@@ -647,42 +659,62 @@ pub fn SignalsGraph() -> Element {
         let w = area.width() as f64;
         let h = area.height() as f64;
         if w > 0.0 && h > 0.0 {
-            show_overlay = true;
-
-            // диапазоны (те же, что использовали при рисовании)
+            // Диапазоны и пиксельные границы plot-области (синхронны с ChartBuilder)
             let x_min = -PI;
             let x_max = PI;
             let y_min = -1.0;
             let y_max = 1.0;
 
-            // перевод пикселей -> данные графика
-            let x_data = x_min + (px / w) * (x_max - x_min);
-            // y: на экране y растёт вниз, а в данных вверх -> инвертируем
-            let y_data = y_max - (py / h) * (y_max - y_min);
+            // Те же параметры, что использованы выше
+            let margin = 10.0_f64;
+            let x_label_area = 32.0_f64; // снизу
+            let y_label_area = 40.0_f64; // слева
 
-            coord_text = format!("({:+.3}, {:+.3})", x_data, y_data);
+            let plot_left = y_label_area + margin;
+            let plot_top = margin;
+            let plot_right = w - margin;
+            let plot_bottom = h - x_label_area - margin;
+            let plot_w = (plot_right - plot_left).max(1.0);
+            let plot_h = (plot_bottom - plot_top).max(1.0);
 
-            let text_len = coord_text.len() as f64;
-            let overlay_w = (text_len * 7.5 + 12.0).max(40.0); // ширина подсказки
-            let overlay_h = 20.0; // высота подсказки
+            // Показываем координаты только ВНУТРИ plot-области
+            let inside = px >= plot_left && px <= plot_right && py >= plot_top && py <= plot_bottom;
+            if inside {
+                show_overlay = true;
 
-            // позиция оверлея (смещаем немного от курсора чтобы не закрывать)
-            let mut ox = px + 12.0;
-            let mut oy = py + 12.0;
+                // Перевод пикселей plot area -> данные графика
+                let mut x_data = x_min + ((px - plot_left) / plot_w) * (x_max - x_min);
+                let mut y_data = y_max - ((py - plot_top) / plot_h) * (y_max - y_min);
 
-            // Если вылезает за правую границу — показываем слева от курсора
-            if ox + overlay_w > w {
-                ox = px - overlay_w - 12.0;
+                // Снап к нулю для визуально точного (0,0)
+                let eps = 1e-9;
+                if x_data.abs() < eps { x_data = 0.0; }
+                if y_data.abs() < eps { y_data = 0.0; }
+
+                coord_text = format!("({:+.3}, {:+.3})", x_data, y_data);
+
+                let text_len = coord_text.len() as f64;
+                let overlay_w = (text_len * 7.5 + 12.0).max(40.0); // ширина подсказки
+                let overlay_h = 20.0; // высота подсказки
+
+                // позиция оверлея (смещаем немного от курсора чтобы не закрывать)
+                let mut ox = px + 12.0;
+                let mut oy = py + 12.0;
+
+                // Если вылезает за правую границу — показываем слева от курсора
+                if ox + overlay_w > w {
+                    ox = px - overlay_w - 12.0;
+                }
+                
+                // Если вылезает за нижнюю границу — показываем выше курсора
+                if oy + overlay_h > h {
+                    oy = py - overlay_h - 12.0;
+                }
+
+                // Приводим к f32 для rsx
+                overlay_x = ox as f32;
+                overlay_y = oy as f32;
             }
-            
-            // Если вылезает за нижнюю границу — показываем выше курсора
-            if oy + overlay_h > h {
-                oy = py - overlay_h - 12.0;
-            }
-
-            // Приводим к f32 для rsx
-            overlay_x = ox as f32;
-            overlay_y = oy as f32;
         }
     }
 
