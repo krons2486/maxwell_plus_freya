@@ -167,42 +167,49 @@ pub fn ButtonBar(
                 tooltip: "Open Folder".to_string(),
                 icon: rsx!(OpenedFolder {}),
                 onclick: on_open.clone(),
+                is_active: None,
             }
             // Сохранить
             ButtonIcon {
                 tooltip: "Save".to_string(),
                 icon: rsx!(Save {}),
                 onclick: move |_| println!("Save clicked"),
+                is_active: None,
             }
             // Отменить
             ButtonIcon {
                 tooltip: "Undo".to_string(),
                 icon: rsx!(Undo {}),
                 onclick: move |_| println!("Undo clicked"),
+                is_active: None,
             }
             // Повторить
             ButtonIcon {
                 tooltip: "Redo".to_string(),
                 icon: rsx!(Redo {}),
                 onclick: move |_| println!("Redo clicked"),
+                is_active: None,
             }
             // Добавить
             ButtonIcon {
                 tooltip: "Add".to_string(),
                 icon: rsx!(Add {}),
                 onclick: move |_| println!("Add clicked"),
+                is_active: None,
             }
             // Цвет
             ButtonIcon {
                 tooltip: "Choose color".to_string(),
                 icon: rsx!(RgbColorWheel {}),
                 onclick: move |_| println!("Color clicked"),
+                is_active: None,
             }
             // Курсор
             ButtonIcon {
                 tooltip: "Cursor".to_string(),
                 icon: rsx!(Cursor {}),
                 onclick: move |_| println!("Cursor clicked"),
+                is_active: None,
             }
             // Рисование прямоугольников (только на Геометрии)
             ButtonIcon {
@@ -219,9 +226,15 @@ pub fn ButtonBar(
                         }
                     }
                 },
+                is_active: Some(*draw_rect_mode.read()),
             }
             // Остальные кнопки без логики
-            ButtonIcon { tooltip: "Ellipse".to_string(), icon: rsx!(Ellipse {}), onclick: |_| {} }
+            ButtonIcon { 
+                tooltip: "Ellipse".to_string(), 
+                icon: rsx!(Ellipse {}), 
+                onclick: |_| {},
+                is_active: None,
+            }
             ButtonIcon { 
                 tooltip: "Source".to_string(), 
                 icon: rsx!(Source {}), 
@@ -235,7 +248,8 @@ pub fn ButtonBar(
                             draw_probe_mode.set(false);
                         }
                     }
-                }
+                },
+                is_active: Some(*draw_source_mode.read()),
             }
             ButtonIcon { 
                 tooltip: "Probe".to_string(), 
@@ -250,11 +264,27 @@ pub fn ButtonBar(
                             draw_source_mode.set(false);
                         }
                     }
-                }
+                },
+                is_active: Some(*draw_probe_mode.read()),
             }
-            ButtonIcon { tooltip: "Line".to_string(), icon: rsx!(Line {}), onclick: |_| {} }
-            ButtonIcon { tooltip: "Start".to_string(), icon: rsx!(Start {}), onclick: |_| {} }
-            ButtonIcon { tooltip: "Stop".to_string(), icon: rsx!(Stop {}), onclick: |_| {} }
+            ButtonIcon { 
+                tooltip: "Line".to_string(), 
+                icon: rsx!(Line {}), 
+                onclick: |_| {},
+                is_active: None,
+            }
+            ButtonIcon { 
+                tooltip: "Start".to_string(), 
+                icon: rsx!(Start {}), 
+                onclick: |_| {},
+                is_active: None,
+            }
+            ButtonIcon { 
+                tooltip: "Stop".to_string(), 
+                icon: rsx!(Stop {}), 
+                onclick: |_| {},
+                is_active: None,
+            }
         }
     )
 }
@@ -264,12 +294,21 @@ pub fn ButtonIcon(
     tooltip: String,
     icon: Element,
     onclick: EventHandler<MouseEvent>,
+    is_active: Option<bool>,
 ) -> Element {
+    let background_color = if is_active.unwrap_or(false) {
+        "rgb(100, 150, 255)" // синий цвет для активной кнопки
+    } else {
+        "transparent"
+    };
+    
     rsx!(
         rect {
             width: "40",
             height: "40",
             margin: "0 5 0 0",
+            background: background_color,
+            corner_radius: "4",
             onclick: onclick.clone(),
             {icon}
         }
