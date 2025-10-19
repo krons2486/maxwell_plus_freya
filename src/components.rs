@@ -15,6 +15,7 @@ use freya::{
 use skia_safe::{Color, Paint, Rect};
 use std::sync::Arc;
 use std::f64::consts::PI;
+use crate::functions::{ProjectSettings, ProjectObject, ObjectType};
 
 // Импорт изображений
 import_svg!(OpenedFolder, "../assets/images/opened-folder.svg", {
@@ -152,6 +153,7 @@ pub fn ButtonBar(
     draw_source_mode: Signal<bool>,
     draw_probe_mode: Signal<bool>,
     on_open: EventHandler<MouseEvent>,
+    on_open_project_settings: EventHandler<MouseEvent>,
 ) -> Element {
     rsx!(
         rect {
@@ -194,7 +196,7 @@ pub fn ButtonBar(
             ButtonIcon {
                 tooltip: "Add".to_string(),
                 icon: rsx!(Add {}),
-                onclick: move |_| println!("Add clicked"),
+                onclick: on_open_project_settings.clone(),
                 is_active: None,
             }
             // Цвет
@@ -1019,6 +1021,415 @@ pub fn Footer() -> Element {
                     padding: "5 10",
                     border: "1 solid #333",
                     label { "{text}" }
+                }
+            }
+        }
+    )
+}
+
+#[component]
+pub fn ProjectSettingsApp(
+    project_settings: Signal<ProjectSettings>,
+    on_apply: EventHandler<ProjectSettings>,
+    on_close: EventHandler<()>,
+) -> Element {
+    let mut description = use_signal(|| project_settings.read().description.clone());
+    let mut sizex = use_signal(|| project_settings.read().sizex);
+    let mut sizey = use_signal(|| project_settings.read().sizey);
+    let mut dx = use_signal(|| project_settings.read().dx);
+    let mut dy = use_signal(|| project_settings.read().dy);
+    let mut maxtime = use_signal(|| project_settings.read().maxtime);
+    let objects = use_signal(|| project_settings.read().objects.clone());
+    
+    let mut selected_object_type = use_signal(|| ObjectType::Rectangle);
+    let mut new_object_x1 = use_signal(|| String::new());
+    let mut new_object_y1 = use_signal(|| String::new());
+    let mut new_object_x2 = use_signal(|| String::new());
+    let mut new_object_y2 = use_signal(|| String::new());
+
+
+    let handle_apply = {
+        let description = description.clone();
+        let sizex = sizex.clone();
+        let sizey = sizey.clone();
+        let dx = dx.clone();
+        let dy = dy.clone();
+        let maxtime = maxtime.clone();
+        let objects = objects.clone();
+        let on_apply = on_apply.clone();
+        let on_close = on_close.clone();
+        move |_| {
+            let settings = ProjectSettings {
+                description: description.read().clone(),
+                sizex: *sizex.read(),
+                sizey: *sizey.read(),
+                dx: *dx.read(),
+                dy: *dy.read(),
+                maxtime: *maxtime.read(),
+                objects: objects.read().clone(),
+            };
+            on_apply.call(settings);
+            // Закрываем окно после применения настроек
+            on_close.call(());
+        }
+    };
+
+    let handle_cancel = {
+        let on_close = on_close.clone();
+        move |_| {
+            on_close.call(());
+        }
+    };
+
+    let handle_add_object = {
+        let mut objects = objects.clone();
+        let selected_object_type = selected_object_type.clone();
+        let mut new_object_x1 = new_object_x1.clone();
+        let mut new_object_y1 = new_object_y1.clone();
+        let mut new_object_x2 = new_object_x2.clone();
+        let mut new_object_y2 = new_object_y2.clone();
+        move |_| {
+            let x1 = new_object_x1.read().parse::<f32>().unwrap_or(0.0);
+            let y1 = new_object_y1.read().parse::<f32>().unwrap_or(0.0);
+            let object_type = *selected_object_type.read();
+            
+            let mut current_objects = objects.read().clone();
+            let mut new_object = ProjectObject {
+                object_type: object_type,
+                x1,
+                y1,
+                x2: None,
+                y2: None,
+            };
+
+            match object_type {
+                ObjectType::Rectangle => {
+                    let x2 = new_object_x2.read().parse::<f32>().unwrap_or(0.0);
+                    let y2 = new_object_y2.read().parse::<f32>().unwrap_or(0.0);
+                    new_object.x2 = Some(x2);
+                    new_object.y2 = Some(y2);
+                }
+                _ => {}
+            }
+
+            current_objects.push(new_object);
+            objects.set(current_objects);
+            
+            // Очищаем поля ввода
+            new_object_x1.set(String::new());
+            new_object_y1.set(String::new());
+            new_object_x2.set(String::new());
+            new_object_y2.set(String::new());
+        }
+    };
+
+    rsx!(
+        AppTheme {
+            rect {
+                width: "100%",
+                height: "100%",
+                direction: "vertical",
+                padding: "20",
+                
+                // Заголовок
+                rect {
+                    height: "40",
+                    main_align: "center",
+                    cross_align: "center",
+                    label {
+                        font_size: "18",
+                        font_weight: "bold",
+                        "Настройки проекта"
+                    }
+                }
+                
+                // Параметры проекта
+                rect {
+                    direction: "vertical",
+                    spacing: "10",
+                    label {
+                        font_size: "14",
+                        font_weight: "bold",
+                        "Параметры проекта:"
+                    }
+                    
+                    // Описание проекта
+                    rect {
+                        direction: "horizontal",
+                        spacing: "10",
+                        cross_align: "center",
+                        label {
+                            width: "150",
+                            "Описание проекта:"
+                        }
+                        Input {
+                            value: description.read().clone(),
+                            onchange: move |value: String| description.set(value),
+                            placeholder: "Введите описание проекта",
+                            width: "400",
+                        }
+                    }
+                }
+                
+                // Параметры моделирования
+                rect {
+                    direction: "vertical",
+                    spacing: "10",
+                    label {
+                        font_size: "14",
+                        font_weight: "bold",
+                        "Параметры моделирования:"
+                    }
+                    
+                    // Размер области моделирования
+                    rect {
+                        direction: "horizontal",
+                        spacing: "10",
+                        cross_align: "center",
+                        label {
+                            width: "150",
+                            "Размер области (м):"
+                        }
+                        Input {
+                            value: sizex.read().to_string(),
+                            onchange: move |value: String| {
+                                if let Ok(val) = value.parse::<f32>() {
+                                    sizex.set(val);
+                                }
+                            },
+                            placeholder: "sizex",
+                            width: "100",
+                        }
+                        Input {
+                            value: sizey.read().to_string(),
+                            onchange: move |value: String| {
+                                if let Ok(val) = value.parse::<f32>() {
+                                    sizey.set(val);
+                                }
+                            },
+                            placeholder: "sizey",
+                            width: "100",
+                        }
+                    }
+                    
+                    // Размер ячейки
+                    rect {
+                        direction: "horizontal",
+                        spacing: "10",
+                        cross_align: "center",
+                        label {
+                            width: "150",
+                            "Размер ячейки (м):"
+                        }
+                        Input {
+                            value: dx.read().to_string(),
+                            onchange: move |value: String| {
+                                if let Ok(val) = value.parse::<f32>() {
+                                    dx.set(val);
+                                }
+                            },
+                            placeholder: "dx",
+                            width: "100",
+                        }
+                        Input {
+                            value: dy.read().to_string(),
+                            onchange: move |value: String| {
+                                if let Ok(val) = value.parse::<f32>() {
+                                    dy.set(val);
+                                }
+                            },
+                            placeholder: "dy",
+                            width: "100",
+                        }
+                    }
+                    
+                    // Время моделирования
+                    rect {
+                        direction: "horizontal",
+                        spacing: "10",
+                        cross_align: "center",
+                        label {
+                            width: "150",
+                            "Время моделирования (с):"
+                        }
+                        Input {
+                            value: maxtime.read().to_string(),
+                            onchange: move |value: String| {
+                                if let Ok(val) = value.parse::<f32>() {
+                                    maxtime.set(val);
+                                }
+                            },
+                            placeholder: "maxtime",
+                            width: "100",
+                        }
+                    }
+                }
+                
+                // Новый объект
+                rect {
+                    direction: "vertical",
+                    spacing: "10",
+                    label {
+                        font_size: "14",
+                        font_weight: "bold",
+                        "Новый объект:"
+                    }
+                    
+                    // Выбор типа объекта
+                    rect {
+                        direction: "horizontal",
+                        spacing: "10",
+                        cross_align: "center",
+                        label {
+                            width: "150",
+                            "Тип объекта:"
+                        }
+                        rect {
+                            width: "200",
+                            height: "30",
+                            background: "rgb(240, 240, 240)",
+                            corner_radius: "4",
+                            border: "1 solid #ccc",
+                            main_align: "center",
+                            cross_align: "center",
+                            onclick: move |_| {
+                                // Простое переключение между типами
+                                let current = *selected_object_type.read();
+                                let new_type = match current {
+                                    ObjectType::Rectangle => ObjectType::Source,
+                                    ObjectType::Source => ObjectType::Probe,
+                                    ObjectType::Probe => ObjectType::Rectangle,
+                                };
+                                selected_object_type.set(new_type);
+                            },
+                            label {
+                                match *selected_object_type.read() {
+                                    ObjectType::Rectangle => "Прямоугольник",
+                                    ObjectType::Source => "Источник",
+                                    ObjectType::Probe => "Зонд",
+                                }
+                            }
+                        }
+                    }
+                    
+                    // Координаты объекта
+                    rect {
+                        direction: "horizontal",
+                        spacing: "10",
+                        cross_align: "center",
+                        label {
+                            width: "150",
+                            "Координаты:"
+                        }
+                        Input {
+                            value: new_object_x1.read().clone(),
+                            onchange: move |value: String| new_object_x1.set(value),
+                            placeholder: "x1",
+                            width: "80",
+                        }
+                        Input {
+                            value: new_object_y1.read().clone(),
+                            onchange: move |value: String| new_object_y1.set(value),
+                            placeholder: "y1",
+                            width: "80",
+                        }
+                        if *selected_object_type.read() == ObjectType::Rectangle {
+                            Input {
+                                value: new_object_x2.read().clone(),
+                                onchange: move |value: String| new_object_x2.set(value),
+                                placeholder: "x2",
+                                width: "80",
+                            }
+                            Input {
+                                value: new_object_y2.read().clone(),
+                                onchange: move |value: String| new_object_y2.set(value),
+                                placeholder: "y2",
+                                width: "80",
+                            }
+                        }
+                    }
+                    
+                    // Кнопка добавления объекта
+                    rect {
+                        direction: "horizontal",
+                        spacing: "10",
+                        cross_align: "center",
+                        rect { width: "150" } // Отступ
+                        Button {
+                            onclick: handle_add_object,
+                            label {
+                                "Добавить объект"
+                            }
+                        }
+                    }
+                }
+                
+                // Список объектов
+                rect {
+                    direction: "vertical",
+                    spacing: "5",
+                    height: "100",
+                    label {
+                        font_size: "14",
+                        font_weight: "bold",
+                        "Объекты проекта:"
+                    }
+                    ScrollView {
+                        height: "80",
+                        rect {
+                            direction: "vertical",
+                            spacing: "2",
+                            for obj in objects.read().iter() {
+                                rect {
+                                    direction: "horizontal",
+                                    spacing: "10",
+                                    padding: "5",
+                                    background: "rgb(240, 240, 240)",
+                                    corner_radius: "4",
+                                    label {
+                                        width: "100",
+                                        match obj.object_type {
+                                            ObjectType::Rectangle => "Прямоугольник",
+                                            ObjectType::Source => "Источник",
+                                            ObjectType::Probe => "Зонд",
+                                        }
+                                    }
+                                    label {
+                                        match obj.object_type {
+                                            ObjectType::Rectangle => {
+                                                if let (Some(x2), Some(y2)) = (obj.x2, obj.y2) {
+                                                    format!("({:.2}, {:.2}) - ({:.2}, {:.2})", obj.x1, obj.y1, x2, y2)
+                                                } else {
+                                                    format!("({:.2}, {:.2})", obj.x1, obj.y1)
+                                                }
+                                            }
+                                            _ => format!("({:.2}, {:.2})", obj.x1, obj.y1),
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                // Кнопки управления
+                rect {
+                    direction: "horizontal",
+                    spacing: "10",
+                    main_align: "center",
+                    margin: "20 0 0 0",
+                    Button {
+                        onclick: handle_apply,
+                        label {
+                            "Задать"
+                        }
+                    }
+                    Button {
+                        onclick: handle_cancel,
+                        label {
+                            "Отмена"
+                        }
+                    }
                 }
             }
         }
