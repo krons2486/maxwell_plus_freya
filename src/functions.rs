@@ -136,7 +136,7 @@ pub struct PlaneWaveSourceDef {
 pub struct SourcesSection {
     #[serde(default)]
     #[allow(unused)]
-    pub cylindical: Vec<CylindricalSourceDef>,
+    pub cylindrical: Vec<CylindricalSourceDef>,
     #[serde(default)]
     #[allow(unused)]
     pub planewave: Vec<PlaneWaveSourceDef>,
@@ -251,16 +251,22 @@ pub struct ProjectObject {
     pub y1: f32,
     pub x2: Option<f32>, // Для прямоугольника
     pub y2: Option<f32>, // Для прямоугольника
+    pub eps: Option<f32>, // Диэлектрическая проницаемость (только для прямоугольника)
+    pub mu: Option<f32>,  // Магнитная проницаемость (только для прямоугольника)
 }
 
 /// Параметры проекта
 #[derive(Debug, Clone)]
 pub struct ProjectSettings {
+    #[allow(dead_code)]
     pub description: String,
     pub sizex: f32,
     pub sizey: f32,
+    #[allow(dead_code)]
     pub dx: f32,
+    #[allow(dead_code)]
     pub dy: f32,
+    #[allow(dead_code)]
     pub maxtime: f32,
     pub objects: Vec<ProjectObject>,
 }
@@ -298,56 +304,6 @@ impl ProjectSettings {
         self.objects.push(object);
     }
 
-    /// Конвертирует объекты проекта в нормализованные координаты для отображения
-    pub fn to_normalized_rectangles(&self) -> Vec<((f32, f32), (f32, f32))> {
-        self.objects
-            .iter()
-            .filter_map(|obj| match obj.object_type {
-                ObjectType::Rectangle => {
-                    if let (Some(x2), Some(y2)) = (obj.x2, obj.y2) {
-                        let nx1 = obj.x1 / self.sizex;
-                        let ny1 = obj.y1 / self.sizey;
-                        let nx2 = x2 / self.sizex;
-                        let ny2 = y2 / self.sizey;
-                        Some(((nx1, ny1), (nx2, ny2)))
-                    } else {
-                        None
-                    }
-                }
-                _ => None,
-            })
-            .collect()
-    }
-
-    /// Конвертирует источники проекта в нормализованные координаты для отображения
-    pub fn to_normalized_sources(&self) -> Vec<(f32, f32)> {
-        self.objects
-            .iter()
-            .filter_map(|obj| match obj.object_type {
-                ObjectType::Source => {
-                    let nx = obj.x1 / self.sizex;
-                    let ny = obj.y1 / self.sizey;
-                    Some((nx, ny))
-                }
-                _ => None,
-            })
-            .collect()
-    }
-
-    /// Конвертирует зонды проекта в нормализованные координаты для отображения
-    pub fn to_normalized_probes(&self) -> Vec<(f32, f32)> {
-        self.objects
-            .iter()
-            .filter_map(|obj| match obj.object_type {
-                ObjectType::Probe => {
-                    let nx = obj.x1 / self.sizex;
-                    let ny = obj.y1 / self.sizey;
-                    Some((nx, ny))
-                }
-                _ => None,
-            })
-            .collect()
-    }
 
     /// Конвертирует все объекты проекта в нормализованные координаты
     #[allow(unused)]
@@ -359,6 +315,8 @@ impl ProjectSettings {
                 y1: obj.y1 / self.sizey,
                 x2: obj.x2.map(|x| x / self.sizex),
                 y2: obj.y2.map(|y| y / self.sizey),
+                eps: obj.eps,
+                mu: obj.mu,
             }
         }).collect()
     }

@@ -149,11 +149,11 @@ pub fn MenuBar(open_dropdown: Signal<String>) -> Element {
 #[component]
 pub fn ButtonBar(
     active_tab: Signal<String>,
-    draw_rect_mode: Signal<bool>,
-    draw_source_mode: Signal<bool>,
-    draw_probe_mode: Signal<bool>,
     on_open: EventHandler<MouseEvent>,
     on_open_project_settings: EventHandler<MouseEvent>,
+    on_create_rectangle: EventHandler<MouseEvent>,
+    on_create_source: EventHandler<MouseEvent>,
+    on_create_probe: EventHandler<MouseEvent>,
 ) -> Element {
     rsx!(
         rect {
@@ -213,22 +213,12 @@ pub fn ButtonBar(
                 onclick: move |_| println!("Cursor clicked"),
                 is_active: None,
             }
-            // Рисование прямоугольников (только на Геометрии)
+            // Создание прямоугольника
             ButtonIcon {
                 tooltip: "Rectangle".to_string(),
                 icon: rsx!(Rectangle {}),
-                onclick: move |_| {
-                    if *active_tab.read() == "geometry" {
-                        let cur = *draw_rect_mode.read();
-                        draw_rect_mode.set(!cur);
-                        // Отключаем другие режимы при включении режима прямоугольников
-                        if !cur {
-                            draw_source_mode.set(false);
-                            draw_probe_mode.set(false);
-                        }
-                    }
-                },
-                is_active: Some(*draw_rect_mode.read()),
+                onclick: on_create_rectangle.clone(),
+                is_active: None,
             }
             // Остальные кнопки без логики
             ButtonIcon { 
@@ -240,34 +230,14 @@ pub fn ButtonBar(
             ButtonIcon { 
                 tooltip: "Source".to_string(), 
                 icon: rsx!(Source {}), 
-                onclick: move |_| {
-                    if *active_tab.read() == "geometry" {
-                        let cur = *draw_source_mode.read();
-                        draw_source_mode.set(!cur);
-                        // Отключаем другие режимы при включении режима источников
-                        if !cur {
-                            draw_rect_mode.set(false);
-                            draw_probe_mode.set(false);
-                        }
-                    }
-                },
-                is_active: Some(*draw_source_mode.read()),
+                onclick: on_create_source.clone(),
+                is_active: None,
             }
             ButtonIcon { 
                 tooltip: "Probe".to_string(), 
                 icon: rsx!(Probe {}), 
-                onclick: move |_| {
-                    if *active_tab.read() == "geometry" {
-                        let cur = *draw_probe_mode.read();
-                        draw_probe_mode.set(!cur);
-                        // Отключаем другие режимы при включении режима зондов
-                        if !cur {
-                            draw_rect_mode.set(false);
-                            draw_source_mode.set(false);
-                        }
-                    }
-                },
-                is_active: Some(*draw_probe_mode.read()),
+                onclick: on_create_probe.clone(),
+                is_active: None,
             }
             ButtonIcon { 
                 tooltip: "Line".to_string(), 
@@ -320,10 +290,6 @@ pub fn ButtonIcon(
 #[component]
 pub fn TabsContent(
     active_tab: Signal<String>,
-    draw_rect_mode: Signal<bool>,
-    draw_source_mode: Signal<bool>,
-    draw_probe_mode: Signal<bool>,
-    first_point: Signal<Option<(f32, f32)>>,
     rectangles: Signal<Arc<Vec<((f32, f32), (f32, f32))>>>,
     sources: Signal<Arc<Vec<(f32, f32)>>>,
     probes: Signal<Arc<Vec<(f32, f32)>>>,
@@ -334,10 +300,6 @@ pub fn TabsContent(
             match cur.as_str() {
                 "geometry" => rsx!(
                     CanvasDrawArea {
-                        draw_rect_mode: draw_rect_mode.clone(),
-                        draw_source_mode: draw_source_mode.clone(),
-                        draw_probe_mode: draw_probe_mode.clone(),
-                        first_point: first_point.clone(),
                         rectangles: rectangles.clone(),
                         sources: sources.clone(),
                         probes: probes.clone(),
@@ -454,10 +416,6 @@ pub fn TabsBar(active_tab: Signal<String>) -> Element {
 
 #[component]
 pub fn CanvasDrawArea(
-    draw_rect_mode: Signal<bool>,
-    draw_source_mode: Signal<bool>,
-    draw_probe_mode: Signal<bool>,
-    first_point: Signal<Option<(f32, f32)>>,
     rectangles: Signal<Arc<Vec<((f32, f32), (f32, f32))>>>,
     sources: Signal<Arc<Vec<(f32, f32)>>>,
     probes: Signal<Arc<Vec<(f32, f32)>>>,
@@ -474,14 +432,11 @@ pub fn CanvasDrawArea(
     // Выбранный зонд (индекс)
     let selected_probe = use_signal(|| None::<usize>);
 
-    // onclick: либо рисуем (двумя кликами), либо выбираем прямоугольник/источник/зонд, либо добавляем источник/зонд
+    // onclick: выбираем прямоугольник/источник/зонд
     let onclick = {
         let mut sel = selected.clone();
         let mut sel_src = selected_source.clone();
         let mut sel_probe = selected_probe.clone();
-        let mut rects = rectangles.clone();
-        let mut srcs = sources.clone();
-        let mut prbs = probes.clone();
         let mut focus = focus.clone(); // <- mutable, чтобы вызвать request_focus()
         move |evt: MouseEvent| {
             // запрашиваем фокус для обработки клавиш
@@ -502,107 +457,71 @@ pub fn CanvasDrawArea(
             let nx = x_px / w;
             let ny = y_px / h;
 
-            if *draw_rect_mode.read() {
-                // режим рисования прямоугольников: 2 клика
-                if first_point.read().is_none() {
-                    first_point.set(Some((nx, ny)));
-                } else {
-                    let p1 = first_point.read().unwrap();
-                    // добавляем в сигнал rectangles (нормализованные)
-                    let mut v = (*rects.read()).as_ref().clone();
-                    v.push((p1, (nx, ny)));
-                    rects.set(Arc::new(v));
-                    first_point.set(None);
-                    draw_rect_mode.set(false);
-
-                    platform.invalidate_drawing_area(size.peek().area);
-                    platform.request_animation_frame();
+            // режим выбора: ищем попавший прямоугольник, источник или зонд
+            // сначала проверяем источники
+            let srcs_read = sources.read();
+            let mut found_source = None;
+            for (idx, &(sx, sy)) in srcs_read.iter().enumerate() {
+                let dx = nx - sx;
+                let dy = ny - sy;
+                let distance = (dx * dx + dy * dy).sqrt();
+                // радиус для клика по источнику (в нормализованных координатах)
+                let click_radius = 0.02; // примерно 20 пикселей для холста 1000px
+                if distance <= click_radius {
+                    found_source = Some(idx);
+                    break;
                 }
-            } else if *draw_source_mode.read() {
-                // режим рисования источников: один клик
-                let mut v = (*srcs.read()).as_ref().clone();
-                v.push((nx, ny));
-                srcs.set(Arc::new(v));
-                draw_source_mode.set(false);
-
-                platform.invalidate_drawing_area(size.peek().area);
-                platform.request_animation_frame();
-            } else if *draw_probe_mode.read() {
-                // режим рисования зондов: один клик
-                let mut v = (*prbs.read()).as_ref().clone();
-                v.push((nx, ny));
-                prbs.set(Arc::new(v));
-                draw_probe_mode.set(false);
-
-                platform.invalidate_drawing_area(size.peek().area);
-                platform.request_animation_frame();
+            }
+            
+            if found_source.is_some() {
+                // выбрали источник
+                sel_src.set(found_source);
+                sel.set(None); // снимаем выбор с прямоугольника
+                sel_probe.set(None); // снимаем выбор с зонда
             } else {
-                // режим выбора: ищем попавший прямоугольник, источник или зонд
-                // сначала проверяем источники
-                let srcs_read = srcs.read();
-                let mut found_source = None;
-                for (idx, &(sx, sy)) in srcs_read.iter().enumerate() {
-                    let dx = nx - sx;
-                    let dy = ny - sy;
+                // проверяем зонды
+                let prbs_read = probes.read();
+                let mut found_probe = None;
+                for (idx, &(px, py)) in prbs_read.iter().enumerate() {
+                    let dx = nx - px;
+                    let dy = ny - py;
                     let distance = (dx * dx + dy * dy).sqrt();
-                    // радиус для клика по источнику (в нормализованных координатах)
+                    // радиус для клика по зонду (в нормализованных координатах)
                     let click_radius = 0.02; // примерно 20 пикселей для холста 1000px
                     if distance <= click_radius {
-                        found_source = Some(idx);
+                        found_probe = Some(idx);
                         break;
                     }
                 }
                 
-                if found_source.is_some() {
-                    // выбрали источник
-                    sel_src.set(found_source);
+                if found_probe.is_some() {
+                    // выбрали зонд
+                    sel_probe.set(found_probe);
                     sel.set(None); // снимаем выбор с прямоугольника
-                    sel_probe.set(None); // снимаем выбор с зонда
+                    sel_src.set(None); // снимаем выбор с источника
                 } else {
-                    // проверяем зонды
-                    let prbs_read = prbs.read();
-                    let mut found_probe = None;
-                    for (idx, &(px, py)) in prbs_read.iter().enumerate() {
-                        let dx = nx - px;
-                        let dy = ny - py;
-                        let distance = (dx * dx + dy * dy).sqrt();
-                        // радиус для клика по зонду (в нормализованных координатах)
-                        let click_radius = 0.02; // примерно 20 пикселей для холста 1000px
-                        if distance <= click_radius {
-                            found_probe = Some(idx);
+                    // ищем прямоугольник
+                    let rects_read = rectangles.read();
+                    let mut found_rect = None;
+                    for (idx, &((x1, y1), (x2, y2))) in rects_read.iter().enumerate() {
+                        let minx = x1.min(x2);
+                        let maxx = x1.max(x2);
+                        let miny = y1.min(y2);
+                        let maxy = y1.max(y2);
+                        if nx >= minx && nx <= maxx && ny >= miny && ny <= maxy {
+                            found_rect = Some(idx);
                             break;
                         }
                     }
-                    
-                    if found_probe.is_some() {
-                        // выбрали зонд
-                        sel_probe.set(found_probe);
-                        sel.set(None); // снимаем выбор с прямоугольника
-                        sel_src.set(None); // снимаем выбор с источника
-                    } else {
-                        // ищем прямоугольник
-                        let rects_read = rects.read();
-                        let mut found_rect = None;
-                        for (idx, &((x1, y1), (x2, y2))) in rects_read.iter().enumerate() {
-                            let minx = x1.min(x2);
-                            let maxx = x1.max(x2);
-                            let miny = y1.min(y2);
-                            let maxy = y1.max(y2);
-                            if nx >= minx && nx <= maxx && ny >= miny && ny <= maxy {
-                                found_rect = Some(idx);
-                                break;
-                            }
-                        }
-                        // устанавливаем выбранный элемент
-                        sel.set(found_rect);
-                        sel_src.set(None); // снимаем выбор с источника
-                        sel_probe.set(None); // снимаем выбор с зонда
-                    }
+                    // устанавливаем выбранный элемент
+                    sel.set(found_rect);
+                    sel_src.set(None); // снимаем выбор с источника
+                    sel_probe.set(None); // снимаем выбор с зонда
                 }
-                
-                platform.invalidate_drawing_area(size.peek().area);
-                platform.request_animation_frame();
             }
+            
+            platform.invalidate_drawing_area(size.peek().area);
+            platform.request_animation_frame();
         }
     };
 
@@ -1100,6 +1019,8 @@ pub fn ProjectSettingsApp(
                 y1,
                 x2: None,
                 y2: None,
+                eps: None,
+                mu: None,
             };
 
             match object_type {

@@ -18,8 +18,39 @@ fn main() {
     if args.iter().any(|a| a == "--add-dialog") {
         // Запускаем отдельное окно диалога добавления объекта
         dialog_window::launch_dialog_app();
+    } else if args.iter().any(|a| a == "--rectangle-dialog") {
+        // Запускаем диалог создания прямоугольника
+        dialog_window::launch_rectangle_dialog();
+    } else if args.iter().any(|a| a == "--source-dialog") {
+        // Запускаем диалог создания источника
+        dialog_window::launch_source_dialog();
+    } else if args.iter().any(|a| a == "--probe-dialog") {
+        // Запускаем диалог создания зонда
+        dialog_window::launch_probe_dialog();
     } else {
+        // Проверяем наличие временного файла при запуске
+        let temp_file = std::env::temp_dir().join("maxwell_temp_config.toml");
+        if temp_file.exists() {
+            println!("Обнаружен временный файл конфигурации от предыдущей сессии: {:?}", temp_file);
+            println!("Вы можете использовать 'Настройки проекта' для загрузки этой конфигурации");
+        }
+        
+        // Регистрируем обработчик очистки временного файла при закрытии программы
+        let cleanup_handler = move || {
+            if temp_file.exists() {
+                if let Err(e) = std::fs::remove_file(&temp_file) {
+                    eprintln!("Не удалось удалить временный файл: {}", e);
+                } else {
+                    println!("Временный файл удален при закрытии программы");
+                }
+            }
+        };
+        
+        // Запускаем основное приложение
         launch(app);
+        
+        // Вызываем очистку при завершении
+        cleanup_handler();
     }
 }
 
@@ -28,10 +59,6 @@ fn main() {
 fn app() -> Element {
     let open_dropdown  = use_signal(|| String::new());
     let active_tab     = use_signal(|| "geometry".to_string());
-    let draw_rect_mode = use_signal(|| false);
-    let draw_source_mode = use_signal(|| false);
-    let draw_probe_mode = use_signal(|| false);
-    let first_point    = use_signal(|| None::<(f32, f32)>);
     let rectangles     = use_signal(|| Arc::<Vec<((f32, f32),(f32, f32))>>::new(Vec::new()));
     let sources        = use_signal(|| Arc::<Vec<(f32, f32)>>::new(Vec::new()));
     let probes         = use_signal(|| Arc::<Vec<(f32, f32)>>::new(Vec::new()));
@@ -85,7 +112,7 @@ fn app() -> Element {
 
                         // Конвертируем цилиндрические источники из метров в нормализованные (0..1)
                         let normalized_sources = cylindrical_sources_m_to_normalized(
-                            &cfg.sources.cylindical,
+                            &cfg.sources.cylindrical,
                             m.sizex,
                             m.sizey,
                         );
@@ -124,6 +151,7 @@ fn app() -> Element {
                         // Сразу после закрытия читаем временный файл
                         let temp_file = std::env::temp_dir().join("maxwell_temp_config.toml");
                         if temp_file.exists() {
+                            println!("Найден временный файл конфигурации: {:?}", temp_file);
                             match load_config(&temp_file) {
                                 Ok(cfg) => {
                                     println!("Загружена временная конфигурация:\n{:#?}", cfg);
@@ -147,14 +175,15 @@ fn app() -> Element {
                                         &cfg.probes.probe, m.sizex, m.sizey,
                                     );
                                     let normalized_sources = cylindrical_sources_m_to_normalized(
-                                        &cfg.sources.cylindical, m.sizex, m.sizey,
+                                        &cfg.sources.cylindrical, m.sizex, m.sizey,
                                     );
 
                                     rectangles.set(Arc::new(normalized_rects));
                                     probes.set(Arc::new(normalized_probes));
                                     sources.set(Arc::new(normalized_sources));
 
-                                    let _ = std::fs::remove_file(&temp_file);
+                                    // Временный файл сохраняется до закрытия программы
+                                    println!("Временный файл сохранен: {:?}", temp_file);
                                 }
                                 Err(e) => {
                                     eprintln!("Ошибка загрузки временной конфигурации: {:?}", e);
@@ -170,6 +199,183 @@ fn app() -> Element {
         }
     };
 
+    // Обработчик создания прямоугольника
+    let on_create_rectangle = {
+        let modelling = modelling.clone();
+        let mut rectangles = rectangles.clone();
+        let mut sources = sources.clone();
+        let mut probes = probes.clone();
+        let canvas_size = canvas_size.clone();
+        move |_| {
+            // Проверяем, что настройки проекта заданы
+            if modelling.read().is_none() {
+                println!("Ошибка: Сначала настройте параметры рабочей области через кнопку 'Add'");
+                return;
+            }
+            
+            if let Ok(current_exe) = std::env::current_exe() {
+                match Command::new(current_exe).arg("--rectangle-dialog").spawn() {
+                    Ok(mut child) => {
+                        let _ = child.wait();
+                        println!("Диалог создания прямоугольника закрыт");
+                        
+                        // Перезагружаем временный файл для обновления холста
+                        let temp_file = std::env::temp_dir().join("maxwell_temp_config.toml");
+                        if temp_file.exists() {
+                            match load_config(&temp_file) {
+                                Ok(cfg) => {
+                                    let m = cfg.modelling;
+                                    let area = canvas_size.peek().area;
+                                    let canvas_w = area.width();
+                                    let canvas_h = area.height();
+                                    println!("Холст (px): {:.0}×{:.0}; область (m): {}×{}", canvas_w, canvas_h, m.sizex, m.sizey);
+
+                                    let normalized_rects = rectangles_m_to_normalized(
+                                        &cfg.geometry.rectangle, m.sizex, m.sizey,
+                                    );
+                                    let normalized_probes = probes_m_to_normalized(
+                                        &cfg.probes.probe, m.sizex, m.sizey,
+                                    );
+                                    let normalized_sources = cylindrical_sources_m_to_normalized(
+                                        &cfg.sources.cylindrical, m.sizex, m.sizey,
+                                    );
+
+                                    rectangles.set(Arc::new(normalized_rects));
+                                    probes.set(Arc::new(normalized_probes));
+                                    sources.set(Arc::new(normalized_sources));
+                                }
+                                Err(e) => {
+                                    eprintln!("Ошибка загрузки временной конфигурации: {:?}", e);
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Не удалось запустить диалог создания прямоугольника: {e:?}");
+                    }
+                }
+            }
+        }
+    };
+
+    // Обработчик создания источника
+    let on_create_source = {
+        let modelling = modelling.clone();
+        let mut rectangles = rectangles.clone();
+        let mut sources = sources.clone();
+        let mut probes = probes.clone();
+        let canvas_size = canvas_size.clone();
+        move |_| {
+            // Проверяем, что настройки проекта заданы
+            if modelling.read().is_none() {
+                println!("Ошибка: Сначала настройте параметры рабочей области через кнопку 'Add'");
+                return;
+            }
+            
+            if let Ok(current_exe) = std::env::current_exe() {
+                match Command::new(current_exe).arg("--source-dialog").spawn() {
+                    Ok(mut child) => {
+                        let _ = child.wait();
+                        println!("Диалог создания источника закрыт");
+                        
+                        // Перезагружаем временный файл для обновления холста
+                        let temp_file = std::env::temp_dir().join("maxwell_temp_config.toml");
+                        if temp_file.exists() {
+                            match load_config(&temp_file) {
+                                Ok(cfg) => {
+                                    let m = cfg.modelling;
+                                    let area = canvas_size.peek().area;
+                                    let canvas_w = area.width();
+                                    let canvas_h = area.height();
+                                    println!("Холст (px): {:.0}×{:.0}; область (m): {}×{}", canvas_w, canvas_h, m.sizex, m.sizey);
+
+                                    let normalized_rects = rectangles_m_to_normalized(
+                                        &cfg.geometry.rectangle, m.sizex, m.sizey,
+                                    );
+                                    let normalized_probes = probes_m_to_normalized(
+                                        &cfg.probes.probe, m.sizex, m.sizey,
+                                    );
+                                    let normalized_sources = cylindrical_sources_m_to_normalized(
+                                        &cfg.sources.cylindrical, m.sizex, m.sizey,
+                                    );
+
+                                    rectangles.set(Arc::new(normalized_rects));
+                                    probes.set(Arc::new(normalized_probes));
+                                    sources.set(Arc::new(normalized_sources));
+                                }
+                                Err(e) => {
+                                    eprintln!("Ошибка загрузки временной конфигурации: {:?}", e);
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Не удалось запустить диалог создания источника: {e:?}");
+                    }
+                }
+            }
+        }
+    };
+
+    // Обработчик создания зонда
+    let on_create_probe = {
+        let modelling = modelling.clone();
+        let mut rectangles = rectangles.clone();
+        let mut sources = sources.clone();
+        let mut probes = probes.clone();
+        let canvas_size = canvas_size.clone();
+        move |_| {
+            // Проверяем, что настройки проекта заданы
+            if modelling.read().is_none() {
+                println!("Ошибка: Сначала настройте параметры рабочей области через кнопку 'Add'");
+                return;
+            }
+            
+            if let Ok(current_exe) = std::env::current_exe() {
+                match Command::new(current_exe).arg("--probe-dialog").spawn() {
+                    Ok(mut child) => {
+                        let _ = child.wait();
+                        println!("Диалог создания зонда закрыт");
+                        
+                        // Перезагружаем временный файл для обновления холста
+                        let temp_file = std::env::temp_dir().join("maxwell_temp_config.toml");
+                        if temp_file.exists() {
+                            match load_config(&temp_file) {
+                                Ok(cfg) => {
+                                    let m = cfg.modelling;
+                                    let area = canvas_size.peek().area;
+                                    let canvas_w = area.width();
+                                    let canvas_h = area.height();
+                                    println!("Холст (px): {:.0}×{:.0}; область (m): {}×{}", canvas_w, canvas_h, m.sizex, m.sizey);
+
+                                    let normalized_rects = rectangles_m_to_normalized(
+                                        &cfg.geometry.rectangle, m.sizex, m.sizey,
+                                    );
+                                    let normalized_probes = probes_m_to_normalized(
+                                        &cfg.probes.probe, m.sizex, m.sizey,
+                                    );
+                                    let normalized_sources = cylindrical_sources_m_to_normalized(
+                                        &cfg.sources.cylindrical, m.sizex, m.sizey,
+                                    );
+
+                                    rectangles.set(Arc::new(normalized_rects));
+                                    probes.set(Arc::new(normalized_probes));
+                                    sources.set(Arc::new(normalized_sources));
+                                }
+                                Err(e) => {
+                                    eprintln!("Ошибка загрузки временной конфигурации: {:?}", e);
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Не удалось запустить диалог создания зонда: {e:?}");
+                    }
+                }
+            }
+        }
+    };
+
 
 
     // Показываем основной интерфейс
@@ -178,11 +384,11 @@ fn app() -> Element {
             MenuBar { open_dropdown: open_dropdown.clone() }
             ButtonBar {
                 active_tab: active_tab.clone(),
-                draw_rect_mode: draw_rect_mode.clone(),
-                draw_source_mode: draw_source_mode.clone(),
-                draw_probe_mode: draw_probe_mode.clone(),
                 on_open: on_open.clone(),
-                on_open_project_settings: on_open_project_settings.clone()
+                on_open_project_settings: on_open_project_settings.clone(),
+                on_create_rectangle: on_create_rectangle.clone(),
+                on_create_source: on_create_source.clone(),
+                on_create_probe: on_create_probe.clone(),
             }
 
             rect { width:"100%", height:"flex(1)",
@@ -194,10 +400,6 @@ fn app() -> Element {
                             rect { height:"flex(1)",
                                 TabsContent {
                                     active_tab: active_tab.clone(),
-                                    draw_rect_mode: draw_rect_mode.clone(),
-                                    draw_source_mode: draw_source_mode.clone(),
-                                    draw_probe_mode: draw_probe_mode.clone(),
-                                    first_point: first_point.clone(),
                                     rectangles: rectangles.clone(),
                                     sources: sources.clone(),
                                     probes: probes.clone(),
