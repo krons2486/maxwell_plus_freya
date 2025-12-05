@@ -1,21 +1,21 @@
+use crate::functions::{ObjectType, ProjectObject, ProjectSettings};
 use freya::{
+    core::custom_attributes::CanvasRunnerContext,
+    hooks::{use_canvas, use_canvas_with_deps, use_focus},
     plot::{
         plotters::{
             chart::ChartBuilder,
-            prelude::{IntoDrawingArea, IntoLinspace, PathElement, DiscreteRanged},
+            prelude::{DiscreteRanged, IntoDrawingArea, IntoLinspace, PathElement},
             series::LineSeries,
             style::{BLUE, WHITE},
         },
         SkiaBackend,
     },
     prelude::*,
-    core::custom_attributes::CanvasRunnerContext,
-    hooks::{use_canvas, use_focus, use_canvas_with_deps},
 };
 use skia_safe::{Color, Paint, Rect};
-use std::sync::Arc;
 use std::f64::consts::PI;
-use crate::functions::{ProjectSettings, ProjectObject, ObjectType};
+use std::sync::Arc;
 
 // Импорт изображений
 import_svg!(OpenedFolder, "../assets/images/opened-folder.svg", {
@@ -221,39 +221,39 @@ pub fn ButtonBar(
                 is_active: None,
             }
             // Остальные кнопки без логики
-            ButtonIcon { 
-                tooltip: "Ellipse".to_string(), 
-                icon: rsx!(Ellipse {}), 
+            ButtonIcon {
+                tooltip: "Ellipse".to_string(),
+                icon: rsx!(Ellipse {}),
                 onclick: |_| {},
                 is_active: None,
             }
-            ButtonIcon { 
-                tooltip: "Source".to_string(), 
-                icon: rsx!(Source {}), 
+            ButtonIcon {
+                tooltip: "Source".to_string(),
+                icon: rsx!(Source {}),
                 onclick: on_create_source.clone(),
                 is_active: None,
             }
-            ButtonIcon { 
-                tooltip: "Probe".to_string(), 
-                icon: rsx!(Probe {}), 
+            ButtonIcon {
+                tooltip: "Probe".to_string(),
+                icon: rsx!(Probe {}),
                 onclick: on_create_probe.clone(),
                 is_active: None,
             }
-            ButtonIcon { 
-                tooltip: "Line".to_string(), 
-                icon: rsx!(Line {}), 
+            ButtonIcon {
+                tooltip: "Line".to_string(),
+                icon: rsx!(Line {}),
                 onclick: |_| {},
                 is_active: None,
             }
-            ButtonIcon { 
-                tooltip: "Start".to_string(), 
-                icon: rsx!(Start {}), 
+            ButtonIcon {
+                tooltip: "Start".to_string(),
+                icon: rsx!(Start {}),
                 onclick: |_| {},
                 is_active: None,
             }
-            ButtonIcon { 
-                tooltip: "Stop".to_string(), 
-                icon: rsx!(Stop {}), 
+            ButtonIcon {
+                tooltip: "Stop".to_string(),
+                icon: rsx!(Stop {}),
                 onclick: |_| {},
                 is_active: None,
             }
@@ -273,7 +273,7 @@ pub fn ButtonIcon(
     } else {
         "transparent"
     };
-    
+
     rsx!(
         rect {
             width: "40",
@@ -345,8 +345,14 @@ pub fn MySidebar() -> Element {
 #[component]
 pub fn TreeView() -> Element {
     let items = vec![
-        ("Объекты", vec!["Прямоугольник 1", "Прямоугольник 2", "Эллипс"]),
-        ("Источники", vec!["Цилиндрическая волна 1", "Плоская волна 1"]),
+        (
+            "Объекты",
+            vec!["Прямоугольник 1", "Прямоугольник 2", "Эллипс"],
+        ),
+        (
+            "Источники",
+            vec!["Цилиндрическая волна 1", "Плоская волна 1"],
+        ),
         ("Датчики", vec!["Датчик 1", "Датчик 2", "Датчик 3"]),
     ];
 
@@ -365,7 +371,7 @@ pub fn TreeView() -> Element {
 #[component]
 pub fn TreeItem(title: String, items: Vec<&'static str>) -> Element {
     let mut expanded = use_signal(|| true);
-    
+
     rsx!(
         rect {
             direction: "vertical",
@@ -401,7 +407,11 @@ pub fn TreeItem(title: String, items: Vec<&'static str>) -> Element {
 
 #[component]
 pub fn TabsBar(active_tab: Signal<String>) -> Element {
-    let tabs = [ ("Геометрия","geometry"),("Поле","field"),("Временные сигналы","signals") ];
+    let tabs = [
+        ("Геометрия", "geometry"),
+        ("Поле", "field"),
+        ("Временные сигналы", "signals"),
+    ];
     rsx!(
         rect { content:"flex", direction:"horizontal", width:"100%", height:"100%", background:"rgb(240,240,240)", border:"1 solid #ccc",
             for (label,id) in tabs {
@@ -472,7 +482,7 @@ pub fn CanvasDrawArea(
                     break;
                 }
             }
-            
+
             if found_source.is_some() {
                 // выбрали источник
                 sel_src.set(found_source);
@@ -493,7 +503,7 @@ pub fn CanvasDrawArea(
                         break;
                     }
                 }
-                
+
                 if found_probe.is_some() {
                     // выбрали зонд
                     sel_probe.set(found_probe);
@@ -519,7 +529,7 @@ pub fn CanvasDrawArea(
                     sel_probe.set(None); // снимаем выбор с зонда
                 }
             }
-            
+
             platform.invalidate_drawing_area(size.peek().area);
             platform.request_animation_frame();
         }
@@ -550,7 +560,7 @@ pub fn CanvasDrawArea(
                     platform.request_animation_frame();
                     return;
                 }
-                
+
                 // проверяем выбранный зонд
                 let sel_probe_idx = *sel_probe.read();
                 if let Some(idx) = sel_probe_idx {
@@ -564,7 +574,7 @@ pub fn CanvasDrawArea(
                     platform.request_animation_frame();
                     return;
                 }
-                
+
                 // проверяем выбранный прямоугольник
                 let sel_idx = *sel.read();
                 if let Some(idx) = sel_idx {
@@ -583,13 +593,27 @@ pub fn CanvasDrawArea(
 
     // Canvas: перерисовываемся при изменении rectangles(), selected(), sources(), selected_source(), probes() или selected_probe()
     let canvas_ref = use_canvas_with_deps(
-        &(rectangles(), selected(), sources(), selected_source(), probes(), selected_probe()),
-        move |(rects_snapshot, sel_opt, srcs_snapshot, sel_src_opt, probes_snapshot, sel_probe_opt): (
-            Arc<Vec<((f32, f32),(f32,f32))>>,
+        &(
+            rectangles(),
+            selected(),
+            sources(),
+            selected_source(),
+            probes(),
+            selected_probe(),
+        ),
+        move |(
+            rects_snapshot,
+            sel_opt,
+            srcs_snapshot,
+            sel_src_opt,
+            probes_snapshot,
+            sel_probe_opt,
+        ): (
+            Arc<Vec<((f32, f32), (f32, f32))>>,
             Option<usize>,
-            Arc<Vec<(f32,f32)>>,
+            Arc<Vec<(f32, f32)>>,
             Option<usize>,
-            Arc<Vec<(f32,f32)>>,
+            Arc<Vec<(f32, f32)>>,
             Option<usize>,
         )| {
             platform.invalidate_drawing_area(size.peek().area);
@@ -636,7 +660,8 @@ pub fn CanvasDrawArea(
                         paint.set_stroke_width(2.0);
                     }
                     paint.set_style(skia_safe::paint::Style::Stroke);
-                    ctx.canvas.draw_rect(Rect::from_xywh(rx, ry, rw, rh), &paint);
+                    ctx.canvas
+                        .draw_rect(Rect::from_xywh(rx, ry, rw, rh), &paint);
                 }
 
                 // рисуем источники (круг с точкой по центру)
@@ -647,12 +672,16 @@ pub fn CanvasDrawArea(
                         let cx = nx * w;
                         let cy = ny * h;
                         let r = 10.0_f32; // радиус внешнего круга
-                        
+
                         // выбираем цвет в зависимости от того, выбран ли источник
                         let is_selected = Some(idx) == sel_src_opt;
-                        let color = if is_selected { Color::BLUE } else { Color::BLACK };
+                        let color = if is_selected {
+                            Color::BLUE
+                        } else {
+                            Color::BLACK
+                        };
                         let stroke_width = if is_selected { 3.0 } else { 2.0 };
-                        
+
                         // внешний круг (без заполнения)
                         paint.set_style(skia_safe::paint::Style::Stroke);
                         paint.set_stroke_width(stroke_width);
@@ -674,18 +703,24 @@ pub fn CanvasDrawArea(
                         let cx = nx * w;
                         let cy = ny * h;
                         let r = 8.0_f32;
-                        
+
                         // выбираем цвет и толщину в зависимости от того, выбран ли зонд
                         let is_selected = Some(idx) == sel_probe_opt;
-                        let color = if is_selected { Color::BLUE } else { Color::BLACK };
+                        let color = if is_selected {
+                            Color::BLUE
+                        } else {
+                            Color::BLACK
+                        };
                         let stroke_width = if is_selected { 3.0 } else { 2.0 };
-                        
+
                         paint.set_stroke_width(stroke_width);
                         paint.set_color(color);
-                        
+
                         // две пересекающиеся линии (крест)
-                        ctx.canvas.draw_line((cx - r, cy - r), (cx + r, cy + r), &paint);
-                        ctx.canvas.draw_line((cx - r, cy + r), (cx + r, cy - r), &paint);
+                        ctx.canvas
+                            .draw_line((cx - r, cy - r), (cx + r, cy + r), &paint);
+                        ctx.canvas
+                            .draw_line((cx - r, cy + r), (cx + r, cy - r), &paint);
                     }
                 }
 
@@ -795,7 +830,11 @@ pub fn SignalsGraph() -> Element {
                 .y_labels(5)
                 .x_label_formatter(&|v| {
                     // Явно подписываем ноль
-                    if v.abs() < 1e-9 { "0".to_string() } else { format!("{:.2}", v) }
+                    if v.abs() < 1e-9 {
+                        "0".to_string()
+                    } else {
+                        format!("{:.2}", v)
+                    }
                 })
                 .draw()
                 .unwrap();
@@ -864,8 +903,12 @@ pub fn SignalsGraph() -> Element {
 
                 // Снап к нулю для визуально точного (0,0)
                 let eps = 1e-9;
-                if x_data.abs() < eps { x_data = 0.0; }
-                if y_data.abs() < eps { y_data = 0.0; }
+                if x_data.abs() < eps {
+                    x_data = 0.0;
+                }
+                if y_data.abs() < eps {
+                    y_data = 0.0;
+                }
 
                 coord_text = format!("({:+.3}, {:+.3})", x_data, y_data);
 
@@ -881,7 +924,7 @@ pub fn SignalsGraph() -> Element {
                 if ox + overlay_w > w {
                     ox = px - overlay_w - 12.0;
                 }
-                
+
                 // Если вылезает за нижнюю границу — показываем выше курсора
                 if oy + overlay_h > h {
                     oy = py - overlay_h - 12.0;
@@ -925,7 +968,14 @@ pub fn SignalsGraph() -> Element {
 
 #[component]
 pub fn Footer() -> Element {
-    let stats = ["Текущий шаг:", "Гармоника", "TM", "Ez", "Лин.", "Полное поле"];
+    let stats = [
+        "Текущий шаг:",
+        "Гармоника",
+        "TM",
+        "Ez",
+        "Лин.",
+        "Полное поле",
+    ];
     rsx!(
         rect {
             content: "flex",
@@ -959,13 +1009,12 @@ pub fn ProjectSettingsApp(
     let mut dy = use_signal(|| project_settings.read().dy);
     let mut maxtime = use_signal(|| project_settings.read().maxtime);
     let objects = use_signal(|| project_settings.read().objects.clone());
-    
+
     let mut selected_object_type = use_signal(|| ObjectType::Rectangle);
     let mut new_object_x1 = use_signal(|| String::new());
     let mut new_object_y1 = use_signal(|| String::new());
     let mut new_object_x2 = use_signal(|| String::new());
     let mut new_object_y2 = use_signal(|| String::new());
-
 
     let handle_apply = {
         let description = description.clone();
@@ -1011,7 +1060,7 @@ pub fn ProjectSettingsApp(
             let x1 = new_object_x1.read().parse::<f32>().unwrap_or(0.0);
             let y1 = new_object_y1.read().parse::<f32>().unwrap_or(0.0);
             let object_type = *selected_object_type.read();
-            
+
             let mut current_objects = objects.read().clone();
             let mut new_object = ProjectObject {
                 object_type: object_type,
@@ -1035,7 +1084,7 @@ pub fn ProjectSettingsApp(
 
             current_objects.push(new_object);
             objects.set(current_objects);
-            
+
             // Очищаем поля ввода
             new_object_x1.set(String::new());
             new_object_y1.set(String::new());
@@ -1051,7 +1100,7 @@ pub fn ProjectSettingsApp(
                 height: "100%",
                 direction: "vertical",
                 padding: "20",
-                
+
                 // Заголовок
                 rect {
                     height: "40",
@@ -1063,7 +1112,7 @@ pub fn ProjectSettingsApp(
                         "Настройки проекта"
                     }
                 }
-                
+
                 // Параметры проекта
                 rect {
                     direction: "vertical",
@@ -1073,7 +1122,7 @@ pub fn ProjectSettingsApp(
                         font_weight: "bold",
                         "Параметры проекта:"
                     }
-                    
+
                     // Описание проекта
                     rect {
                         direction: "horizontal",
@@ -1091,7 +1140,7 @@ pub fn ProjectSettingsApp(
                         }
                     }
                 }
-                
+
                 // Параметры моделирования
                 rect {
                     direction: "vertical",
@@ -1101,7 +1150,7 @@ pub fn ProjectSettingsApp(
                         font_weight: "bold",
                         "Параметры моделирования:"
                     }
-                    
+
                     // Размер области моделирования
                     rect {
                         direction: "horizontal",
@@ -1132,7 +1181,7 @@ pub fn ProjectSettingsApp(
                             width: "100",
                         }
                     }
-                    
+
                     // Размер ячейки
                     rect {
                         direction: "horizontal",
@@ -1163,7 +1212,7 @@ pub fn ProjectSettingsApp(
                             width: "100",
                         }
                     }
-                    
+
                     // Время моделирования
                     rect {
                         direction: "horizontal",
@@ -1185,7 +1234,7 @@ pub fn ProjectSettingsApp(
                         }
                     }
                 }
-                
+
                 // Новый объект
                 rect {
                     direction: "vertical",
@@ -1195,7 +1244,7 @@ pub fn ProjectSettingsApp(
                         font_weight: "bold",
                         "Новый объект:"
                     }
-                    
+
                     // Выбор типа объекта
                     rect {
                         direction: "horizontal",
@@ -1232,7 +1281,7 @@ pub fn ProjectSettingsApp(
                             }
                         }
                     }
-                    
+
                     // Координаты объекта
                     rect {
                         direction: "horizontal",
@@ -1269,7 +1318,7 @@ pub fn ProjectSettingsApp(
                             }
                         }
                     }
-                    
+
                     // Кнопка добавления объекта
                     rect {
                         direction: "horizontal",
@@ -1284,7 +1333,7 @@ pub fn ProjectSettingsApp(
                         }
                     }
                 }
-                
+
                 // Список объектов
                 rect {
                     direction: "vertical",
@@ -1332,7 +1381,7 @@ pub fn ProjectSettingsApp(
                         }
                     }
                 }
-                
+
                 // Кнопки управления
                 rect {
                     direction: "horizontal",

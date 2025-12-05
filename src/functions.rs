@@ -1,5 +1,12 @@
+use rand::{distributions::Alphanumeric, thread_rng, Rng};
 use serde::Deserialize;
-use std::path::PathBuf;
+use std::fmt::Write as _;
+use std::path::{Path, PathBuf};
+
+const TEMP_CONFIG_ENV_KEY: &str = "MAXWELL_TEMP_CONFIG_PATH";
+const TEMP_CONFIG_PREFIX: &str = "maxwell_temp_config_";
+const TEMP_CONFIG_SUFFIX_LEN: usize = 8;
+const DEFAULT_DESCRIPTION: &str = "Временная конфигурация";
 
 /// Диалог выбора TOML‑файла
 pub fn select_toml_file() -> Option<PathBuf> {
@@ -7,6 +14,56 @@ pub fn select_toml_file() -> Option<PathBuf> {
         .add_filter("TOML", &["toml"])
         .set_title("Выберите файл конфигурации")
         .pick_file()
+}
+
+/// Возвращает текущий путь к конфигурационному файлу, если он уже задан.
+pub fn current_config_path() -> Option<PathBuf> {
+    std::env::var(TEMP_CONFIG_ENV_KEY)
+        .ok()
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+}
+
+/// Устанавливает путь к конфигурационному файлу и очищает предыдущий
+/// временный файл, если он больше не нужен.
+pub fn set_current_config_path<P: AsRef<Path>>(path: P) {
+    let new_path = path.as_ref();
+    if let Some(old_path) = current_config_path() {
+        if old_path != new_path && is_generated_temp_config(&old_path) && old_path.exists() {
+            let _ = std::fs::remove_file(&old_path);
+        }
+    }
+    std::env::set_var(TEMP_CONFIG_ENV_KEY, new_path);
+}
+
+/// Проверяет, относится ли путь к автоматически созданному временному файлу.
+pub fn is_generated_temp_config(path: &Path) -> bool {
+    if !path.starts_with(std::env::temp_dir()) {
+        return false;
+    }
+    match path.file_name().and_then(|name| name.to_str()) {
+        Some(name) => name.starts_with(TEMP_CONFIG_PREFIX),
+        None => false,
+    }
+}
+
+/// Возвращает путь к конфигурационному файлу.
+/// Если путь не задан через переменную окружения, создаёт новый
+/// с 8 случайными символами в имени и сохраняет его в окружении.
+pub fn ensure_temp_config_path() -> PathBuf {
+    if let Some(existing) = current_config_path() {
+        return existing;
+    }
+    let random_suffix: String = thread_rng()
+        .sample_iter(&Alphanumeric)
+        .take(TEMP_CONFIG_SUFFIX_LEN)
+        .map(char::from)
+        .collect();
+
+    let filename = format!("{}{}.toml", TEMP_CONFIG_PREFIX, random_suffix);
+    let path = std::env::temp_dir().join(filename);
+    set_current_config_path(&path);
+    path
 }
 
 /// Секция [modelling]
@@ -185,11 +242,7 @@ pub fn rectangles_m_to_normalized(
 }
 
 /// Конвертирует список зондов из метров -> нормализованные координаты (0..1)
-pub fn probes_m_to_normalized(
-    probes_m: &[ProbeDef],
-    sizex: f32,
-    sizey: f32,
-) -> Vec<(f32, f32)> {
+pub fn probes_m_to_normalized(probes_m: &[ProbeDef], sizex: f32, sizey: f32) -> Vec<(f32, f32)> {
     probes_m
         .iter()
         .map(|p| {
@@ -249,8 +302,8 @@ pub struct ProjectObject {
     pub object_type: ObjectType,
     pub x1: f32,
     pub y1: f32,
-    pub x2: Option<f32>, // Для прямоугольника
-    pub y2: Option<f32>, // Для прямоугольника
+    pub x2: Option<f32>,  // Для прямоугольника
+    pub y2: Option<f32>,  // Для прямоугольника
     pub eps: Option<f32>, // Диэлектрическая проницаемость (только для прямоугольника)
     pub mu: Option<f32>,  // Магнитная проницаемость (только для прямоугольника)
 }
@@ -274,7 +327,7 @@ pub struct ProjectSettings {
 impl Default for ProjectSettings {
     fn default() -> Self {
         Self {
-            description: String::new(),
+            description: DEFAULT_DESCRIPTION.to_string(),
             sizex: 1.0,
             sizey: 1.0,
             dx: 0.01,
@@ -286,6 +339,145 @@ impl Default for ProjectSettings {
 }
 
 impl ProjectSettings {
+    /// Создаёт параметры проекта на основе загруженной конфигурации.
+    pub fn from_config(cfg: &Config) -> Self {
+        let mut objects = Vec::new();
+
+        for rect in &cfg.geometry.rectangle {
+            objects.push(ProjectObject {
+                object_type: ObjectType::Rectangle,
+                x1: rect.x1,
+                y1: rect.y1,
+                x2: Some(rect.x2),
+                y2: Some(rect.y2),
+                eps: Some(rect.eps),
+                mu: Some(rect.mu),
+            });
+        }
+
+        for probe in &cfg.probes.probe {
+            objects.push(ProjectObject {
+                object_type: ObjectType::Probe,
+                x1: probe.x,
+                y1: probe.y,
+                x2: None,
+                y2: None,
+                eps: None,
+                mu: None,
+            });
+        }
+
+        for source in &cfg.sources.cylindrical {
+            objects.push(ProjectObject {
+                object_type: ObjectType::Source,
+                x1: source.x,
+                y1: source.y,
+                x2: None,
+                y2: None,
+                eps: None,
+                mu: None,
+            });
+        }
+
+        Self {
+            description: cfg
+                .description
+                .clone()
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| DEFAULT_DESCRIPTION.to_string()),
+            sizex: cfg.modelling.sizex,
+            sizey: cfg.modelling.sizey,
+            dx: cfg.modelling.dx,
+            dy: cfg.modelling.dy,
+            maxtime: cfg.modelling.maxtime,
+            objects,
+        }
+    }
+
+    /// Преобразует текущие настройки в TOML-строку.
+    pub fn to_toml_string(&self) -> String {
+        let mut toml_content = String::new();
+        let description = if self.description.is_empty() {
+            DEFAULT_DESCRIPTION
+        } else {
+            &self.description
+        };
+
+        writeln!(toml_content, "description = \"{}\"", description).unwrap();
+        toml_content.push('\n');
+        toml_content.push_str("[modelling]\n");
+        writeln!(toml_content, "sizex = {}", self.sizex).unwrap();
+        writeln!(toml_content, "sizey = {}", self.sizey).unwrap();
+        writeln!(toml_content, "dx = {}", self.dx).unwrap();
+        writeln!(toml_content, "dy = {}", self.dy).unwrap();
+        writeln!(toml_content, "maxtime = {}", self.maxtime).unwrap();
+
+        toml_content.push_str("\n[boundary]\n");
+        toml_content.push_str("  [boundary.xmin]\n");
+        toml_content.push_str("  type = \"PEC\"\n");
+        toml_content.push_str("  param1 = \"...\"\n");
+        toml_content.push_str("  param2 = \"...\"\n");
+        toml_content.push_str("  [boundary.xmax]\n");
+        toml_content.push_str("  type = \"PEC\"\n");
+        toml_content.push_str("  param1 = \"...\"\n");
+        toml_content.push_str("  param2 = \"...\"\n");
+        toml_content.push_str("  [boundary.ymin]\n");
+        toml_content.push_str("  type = \"PEC\"\n");
+        toml_content.push_str("  param1 = \"...\"\n");
+        toml_content.push_str("  param2 = \"...\"\n");
+        toml_content.push_str("  [boundary.ymax]\n");
+        toml_content.push_str("  type = \"PEC\"\n");
+        toml_content.push_str("  param1 = \"...\"\n");
+        toml_content.push_str("  param2 = \"...\"\n");
+
+        toml_content.push_str("\n[geometry]\n");
+        for obj in self
+            .objects
+            .iter()
+            .filter(|o| o.object_type == ObjectType::Rectangle)
+        {
+            if let (Some(x2), Some(y2), Some(eps), Some(mu)) = (obj.x2, obj.y2, obj.eps, obj.mu) {
+                toml_content.push_str("  [[geometry.rectangle]]\n");
+                writeln!(toml_content, "  x1 = {}", obj.x1).unwrap();
+                writeln!(toml_content, "  y1 = {}", obj.y1).unwrap();
+                writeln!(toml_content, "  x2 = {}", x2).unwrap();
+                writeln!(toml_content, "  y2 = {}", y2).unwrap();
+                writeln!(toml_content, "  eps = {}", eps).unwrap();
+                writeln!(toml_content, "  mu = {}", mu).unwrap();
+                toml_content.push_str("  sigma = 0.01\n");
+                toml_content.push_str("  color = \"0, 0, 255\"\n");
+            }
+        }
+
+        toml_content.push_str("\n[probes]\n");
+        for obj in self
+            .objects
+            .iter()
+            .filter(|o| o.object_type == ObjectType::Probe)
+        {
+            toml_content.push_str("  [[probes.probe]]\n");
+            writeln!(toml_content, "  x = {}", obj.x1).unwrap();
+            writeln!(toml_content, "  y = {}", obj.y1).unwrap();
+            toml_content.push_str("  color = \"0, 255, 255\"\n");
+        }
+
+        toml_content.push_str("\n[sources]\n");
+        for obj in self
+            .objects
+            .iter()
+            .filter(|o| o.object_type == ObjectType::Source)
+        {
+            toml_content.push_str("  [[sources.cylindrical]]\n");
+            writeln!(toml_content, "  x = {}", obj.x1).unwrap();
+            writeln!(toml_content, "  y = {}", obj.y1).unwrap();
+            toml_content.push_str("  type = \"sin\"\n");
+            toml_content.push_str("  param1 = \"...\"\n");
+            toml_content.push_str("  param2 = \"...\"\n");
+        }
+
+        toml_content
+    }
+
     /// Проверяет, что координаты объекта находятся в пределах области моделирования
     #[allow(unused)]
     pub fn is_coordinate_valid(&self, x: f32, y: f32) -> bool {
@@ -304,12 +496,12 @@ impl ProjectSettings {
         self.objects.push(object);
     }
 
-
     /// Конвертирует все объекты проекта в нормализованные координаты
     #[allow(unused)]
     pub fn to_normalized_objects(&self) -> Vec<ProjectObject> {
-        self.objects.iter().map(|obj| {
-            ProjectObject {
+        self.objects
+            .iter()
+            .map(|obj| ProjectObject {
                 object_type: obj.object_type,
                 x1: obj.x1 / self.sizex,
                 y1: obj.y1 / self.sizey,
@@ -317,7 +509,7 @@ impl ProjectSettings {
                 y2: obj.y2.map(|y| y / self.sizey),
                 eps: obj.eps,
                 mu: obj.mu,
-            }
-        }).collect()
+            })
+            .collect()
     }
 }
