@@ -1,4 +1,7 @@
-use crate::functions::{ObjectType, ProjectObject, ProjectSettings};
+use crate::{
+    fdtd::Fdtd2dTe,
+    functions::{ObjectType, ProjectObject, ProjectSettings},
+};
 use freya::{
     core::custom_attributes::CanvasRunnerContext,
     hooks::{use_canvas, use_canvas_with_deps, use_focus},
@@ -88,12 +91,7 @@ import_image!(Stop, "../assets/images/stop.png", {
     height: "100%"
 });
 
-import_image!(Field, "../assets/images/field.png", {
-    width: "100%",
-    height: "100%"
-});
-
-import_image!(Signals, "../assets/images/signals.png", {
+import_image!(Resume, "../assets/images/resume.png", {
     width: "100%",
     height: "100%"
 });
@@ -154,6 +152,9 @@ pub fn ButtonBar(
     on_create_rectangle: EventHandler<MouseEvent>,
     on_create_source: EventHandler<MouseEvent>,
     on_create_probe: EventHandler<MouseEvent>,
+    on_start: EventHandler<MouseEvent>,
+    on_stop: EventHandler<MouseEvent>,
+    on_resume: EventHandler<MouseEvent>,
 ) -> Element {
     rsx!(
         rect {
@@ -248,13 +249,19 @@ pub fn ButtonBar(
             ButtonIcon {
                 tooltip: "Start".to_string(),
                 icon: rsx!(Start {}),
-                onclick: |_| {},
+                onclick: on_start.clone(),
                 is_active: None,
             }
             ButtonIcon {
                 tooltip: "Stop".to_string(),
                 icon: rsx!(Stop {}),
-                onclick: |_| {},
+                onclick: on_stop.clone(),
+                is_active: None,
+            }
+            ButtonIcon {
+                tooltip: "Resume".to_string(),
+                icon: rsx!(Resume {}),
+                onclick: on_resume.clone(),
                 is_active: None,
             }
         }
@@ -293,6 +300,11 @@ pub fn TabsContent(
     rectangles: Signal<Arc<Vec<((f32, f32), (f32, f32))>>>,
     sources: Signal<Arc<Vec<(f32, f32)>>>,
     probes: Signal<Arc<Vec<(f32, f32)>>>,
+    running: Signal<bool>,
+    resuming: Signal<bool>,
+    step_counter: Signal<usize>,
+    sim: Signal<Fdtd2dTe>,
+    field_data: Signal<(usize, usize, Vec<f64>)>,
 ) -> Element {
     let cur = active_tab.read().clone();
     rsx!(
@@ -311,7 +323,13 @@ pub fn TabsContent(
                         height: "100%",
                         padding: "10",
                         background: "rgb(200,200,200)",
-                        Field {}
+                        FieldTab {
+                            running: running.clone(),
+                            resuming: resuming.clone(),
+                            step_counter: step_counter.clone(),
+                            sim: sim.clone(),
+                            field_data: field_data.clone(),
+                        }
                     }
                 ),
                 "signals" => rsx!(
@@ -747,6 +765,209 @@ pub fn CanvasDrawArea(
     )
 }
 
+fn field_color(value: f64, vmin: f64, vmax: f64) -> Color {
+    // Нормализуем значение в диапазон [-1, 1], где 0 соответствует середине диапазона
+    let mid = (vmin + vmax) / 2.0;
+    let range = (vmax - vmin) / 2.0;
+    
+    let normalized = if range.abs() < 1e-9 {
+        0.0
+    } else {
+        (value - mid) / range
+    };
+    
+    // Ограничиваем значение
+    let v = normalized.clamp(-1.0, 1.0);
+    
+    // Порог для белого цвета (близко к нулю)
+    let white_threshold = 0.05;
+    
+    if v.abs() < white_threshold {
+        // Белый цвет для значений близких к нулю
+        Color::from_argb(255, 255, 255, 255)
+    } else if v < 0.0 {
+        // Отрицательные значения: градиент от белого к синему
+        // v от -white_threshold до -1.0
+        let intensity = ((v.abs() - white_threshold) / (1.0 - white_threshold)).min(1.0);
+        let r = (255.0 * (1.0 - intensity)) as u8;
+        let g = (255.0 * (1.0 - intensity)) as u8;
+        let b = 255;
+        Color::from_argb(255, r, g, b)
+    } else {
+        // Положительные значения: градиент от белого к красному
+        // v от white_threshold до 1.0
+        let intensity = ((v - white_threshold) / (1.0 - white_threshold)).min(1.0);
+        let r = 255;
+        let g = (255.0 * (1.0 - intensity)) as u8;
+        let b = (255.0 * (1.0 - intensity)) as u8;
+        Color::from_argb(255, r, g, b)
+    }
+}
+
+#[component]
+pub fn FieldTab(
+    running: Signal<bool>,
+    resuming: Signal<bool>,
+    step_counter: Signal<usize>,
+    sim: Signal<Fdtd2dTe>,
+    field_data: Signal<(usize, usize, Vec<f64>)>,
+) -> Element {
+    let platform = use_platform();
+    let (reference, size) = use_node_signal();
+
+    // Асинхронный цикл симуляции
+    let _ = use_effect({
+        let sim = sim.clone();
+        let running = running.clone();
+        let resuming = resuming.clone();
+        let step_counter = step_counter.clone();
+        let field_data = field_data.clone();
+        
+        move || {
+            let running_val = *running.read();
+            let resuming_val = *resuming.read();
+            
+            if running_val {
+                // Запускаем асинхронную задачу для выполнения симуляции
+                spawn({
+                    let mut sim = sim.clone();
+                    let mut running = running.clone();
+                    let mut step_counter = step_counter.clone();
+                    let mut field_data = field_data.clone();
+                    
+                    async move {
+                        // Если это НЕ Resume (т.е. Start), сбрасываем симуляцию
+                        if !resuming_val {
+                            {
+                                let mut sim_mut = sim.write();
+                                sim_mut.reset();
+                            }
+                            
+                            // Показываем начальное состояние (шаг 0)
+                            {
+                                let sim_read = sim.read();
+                                let (sx, sy) = sim_read.size();
+                                let data = sim_read.ey().to_vec();
+                                field_data.set((sx, sy, data));
+                            }
+                            step_counter.set(0);
+                            
+                            // Небольшая задержка для отображения начального состояния
+                            async_std::task::sleep(std::time::Duration::from_millis(100)).await;
+                        }
+                        
+                        loop {
+                            // Проверяем, запущена ли симуляция
+                            if !*running.read() {
+                                break;
+                            }
+                            
+                            // Выполняем шаг симуляции
+                            let finished = {
+                                let mut sim_mut = sim.write();
+                                sim_mut.step()
+                            };
+                            
+                            let current_step = sim.read().step_index();
+                            
+                            // Каждые 5 шагов обновляем отображение
+                            if current_step % 2 == 0 {
+                                // Обновляем данные поля для отрисовки
+                                {
+                                    let sim_read = sim.read();
+                                    let (sx, sy) = sim_read.size();
+                                    let data = sim_read.ey().to_vec();
+                                    field_data.set((sx, sy, data));
+                                }
+                                step_counter.set(current_step);
+                                
+                                // Задержка для визуализации (25мс = ~40 FPS для анимации)
+                                async_std::task::sleep(std::time::Duration::from_millis(17)).await;
+                            }
+                            
+                            if finished {
+                                // При завершении показываем финальный шаг
+                                {
+                                    let sim_read = sim.read();
+                                    let (sx, sy) = sim_read.size();
+                                    let data = sim_read.ey().to_vec();
+                                    field_data.set((sx, sy, data));
+                                }
+                                step_counter.set(current_step);
+                                running.set(false);
+                                break;
+                            }
+                        }
+                    }
+                });
+            }
+        }
+    });
+
+    // Canvas только для отрисовки текущего состояния поля
+    let canvas = use_canvas_with_deps(
+        &field_data(),
+        {
+            let platform = platform.clone();
+            let size_init = size.clone();
+            
+            move |(sx, sy, data): (usize, usize, Vec<f64>)| {
+                platform.invalidate_drawing_area(size_init.peek().area);
+                platform.request_animation_frame();
+
+                move |ctx: &mut CanvasRunnerContext<'_>| {
+                    let (w, h) = (ctx.area.width(), ctx.area.height());
+
+                    ctx.canvas.save();
+                    ctx.canvas.translate((ctx.area.min_x(), ctx.area.min_y()));
+                    
+                    // Стираем предыдущий кадр - заливаем белым фоном
+                    let mut bg_paint = Paint::default();
+                    bg_paint.set_anti_alias(false);
+                    bg_paint.set_style(skia_safe::paint::Style::Fill);
+                    bg_paint.set_color(Color::from_argb(255, 255, 255, 255));
+                    ctx.canvas.draw_rect(Rect::from_xywh(0.0, 0.0, w, h), &bg_paint);
+
+                    // Рисуем поле
+                    if sx > 0 && sy > 0 && w > 0.0 && h > 0.0 {
+                        let cell_w = w / sx as f32;
+                        let cell_h = h / sy as f32;
+
+                        let mut paint = Paint::default();
+                        paint.set_anti_alias(false);
+                        paint.set_style(skia_safe::paint::Style::Fill);
+
+                        // Отрисовываем поле Ey по пикселям
+                        for x in 0..sx {
+                            for y in 0..sy {
+                                let idx = x * sy + y;
+                                let color = field_color(data[idx], -15.0, 15.0);
+                                paint.set_color(color);
+                                let rx = x as f32 * cell_w;
+                                let ry = y as f32 * cell_h;
+                                ctx.canvas
+                                    .draw_rect(Rect::from_xywh(rx, ry, cell_w, cell_h), &paint);
+                            }
+                        }
+                    }
+
+                    ctx.canvas.restore();
+                }
+            }
+        },
+    );
+
+    rsx!(
+        rect {
+            reference,
+            canvas_reference: canvas.attribute(),
+            width: "100%",
+            height: "100%",
+            background: "white",
+        }
+    )
+}
+
 #[component]
 pub fn SignalsGraph() -> Element {
     // Платформа и нода для canvas
@@ -967,15 +1188,8 @@ pub fn SignalsGraph() -> Element {
 }
 
 #[component]
-pub fn Footer() -> Element {
-    let stats = [
-        "Текущий шаг:",
-        "Гармоника",
-        "TM",
-        "Ez",
-        "Лин.",
-        "Полное поле",
-    ];
+pub fn Footer(step_counter: Signal<usize>) -> Element {
+    let step_text = format!("{}", *step_counter.read());
     rsx!(
         rect {
             content: "flex",
@@ -985,12 +1199,35 @@ pub fn Footer() -> Element {
             spacing: "5",
             padding: "5 10",
             cross_align: "center",
-            for text in stats {
-                rect {
-                    padding: "5 10",
-                    border: "1 solid #333",
-                    label { "{text}" }
-                }
+            rect {
+                padding: "5 10",
+                border: "1 solid #333",
+                label { "Текущий шаг: {step_text}" }
+            }
+            rect {
+                padding: "5 10",
+                border: "1 solid #333",
+                label { "Гармоника" }
+            }
+            rect {
+                padding: "5 10",
+                border: "1 solid #333",
+                label { "TM" }
+            }
+            rect {
+                padding: "5 10",
+                border: "1 solid #333",
+                label { "Ez" }
+            }
+            rect {
+                padding: "5 10",
+                border: "1 solid #333",
+                label { "Лин." }
+            }
+            rect {
+                padding: "5 10",
+                border: "1 solid #333",
+                label { "Полное поле" }
             }
         }
     )

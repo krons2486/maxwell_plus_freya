@@ -9,6 +9,7 @@ mod fdtd;
 mod functions;
 
 use components::{ButtonBar, Footer, MenuBar, MySidebar, TabsBar, TabsContent};
+use fdtd::{Fdtd2dTe, FdtParams};
 use functions::{
     cylindrical_sources_m_to_normalized, ensure_temp_config_path, is_generated_temp_config,
     load_config, probes_m_to_normalized, rectangles_m_to_normalized, select_toml_file,
@@ -68,6 +69,18 @@ fn app() -> Element {
     let sources = use_signal(|| Arc::<Vec<(f32, f32)>>::new(Vec::new()));
     let probes = use_signal(|| Arc::<Vec<(f32, f32)>>::new(Vec::new()));
     let modelling = use_signal(|| None::<Modelling>);
+    let running = use_signal(|| false);
+    let resuming = use_signal(|| false); // Для продолжения расчёта без сброса
+    let step_counter = use_signal(|| 0_usize);
+
+    // Симуляция FDTD - хранится на уровне приложения, чтобы не сбрасываться при переключении вкладок
+    let sim = use_signal(|| Fdtd2dTe::new(FdtParams::default()));
+    // Снапшот данных поля для отрисовки
+    let field_data = use_signal(|| {
+        let s = Fdtd2dTe::new(FdtParams::default());
+        let (sx, sy) = s.size();
+        (sx, sy, s.ey().to_vec())
+    });
 
     // Этот node сигнал привяжем к панели, где рисуем
     let (canvas_ref, canvas_size) = use_node_signal();
@@ -411,6 +424,34 @@ fn app() -> Element {
                 on_create_rectangle: on_create_rectangle.clone(),
                 on_create_source: on_create_source.clone(),
                 on_create_probe: on_create_probe.clone(),
+                on_start: {
+                    let mut running = running.clone();
+                    let mut resuming = resuming.clone();
+                    move |_| {
+                        // Нельзя нажать Start, если расчёт уже запущен
+                        if *running.read() {
+                            return;
+                        }
+                        resuming.set(false); // Start = сброс и запуск с начала
+                        running.set(true);
+                    }
+                },
+                on_stop: {
+                    let mut running = running.clone();
+                    move |_| running.set(false)
+                },
+                on_resume: {
+                    let mut running = running.clone();
+                    let mut resuming = resuming.clone();
+                    move |_| {
+                        // Нельзя нажать Resume, если расчёт уже запущен
+                        if *running.read() {
+                            return;
+                        }
+                        resuming.set(true); // Resume = продолжение без сброса
+                        running.set(true);
+                    }
+                },
             }
 
             rect { width:"100%", height:"flex(1)",
@@ -425,6 +466,11 @@ fn app() -> Element {
                                     rectangles: rectangles.clone(),
                                     sources: sources.clone(),
                                     probes: probes.clone(),
+                                    running: running.clone(),
+                                    resuming: resuming.clone(),
+                                    step_counter: step_counter.clone(),
+                                    sim: sim.clone(),
+                                    field_data: field_data.clone(),
                                 }
                             }
                         }
@@ -432,7 +478,7 @@ fn app() -> Element {
                 }
             }
 
-            Footer {}
+            Footer { step_counter: step_counter.clone() }
         }
     )
 }
