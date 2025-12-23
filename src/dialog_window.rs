@@ -1,6 +1,20 @@
-use crate::functions::{
-    ensure_temp_config_path, load_config, ObjectType, ProjectObject, ProjectSettings,
-};
+use crate::functions::{ObjectType, ProjectObject, ProjectSettings};
+
+/// Маркер начала конфигурации для передачи через stdout
+pub const CONFIG_START_MARKER: &str = "===MAXWELL_CONFIG_START===";
+/// Маркер конца конфигурации для передачи через stdout
+pub const CONFIG_END_MARKER: &str = "===MAXWELL_CONFIG_END===";
+
+/// Выводит конфигурацию в stdout для передачи главному процессу
+fn output_config_to_stdout(toml_content: &str) {
+    // Используем eprintln для отладки (идёт в stderr, не мешает данным)
+    eprintln!("Отправка конфигурации через stdout...");
+    
+    // Выводим маркированную конфигурацию в stdout
+    println!("{}", CONFIG_START_MARKER);
+    println!("{}", toml_content);
+    println!("{}", CONFIG_END_MARKER);
+}
 use freya::prelude::*;
 use winit::window::WindowButtons;
 
@@ -8,11 +22,8 @@ use winit::window::WindowButtons;
 /// Это окно будет запускаться как отдельное приложение
 #[component]
 pub fn AddObjectDialogApp() -> Element {
-    let config_path = ensure_temp_config_path();
-    let initial_settings = load_config(&config_path)
-        .map(|cfg| ProjectSettings::from_config(&cfg))
-        .unwrap_or_else(|_| ProjectSettings::default());
-    let project_description = initial_settings.description.clone();
+    // Начинаем с настроек по умолчанию (данные передаются обратно через stdout)
+    let initial_settings = ProjectSettings::default();
     let initial_objects = initial_settings.objects.clone();
 
     // Параметры рабочей области (в метрах)
@@ -242,12 +253,9 @@ pub fn AddObjectDialogApp() -> Element {
         move |_: freya::events::MouseEvent| {
             // Проверяем, что есть хотя бы один объект
             if objects.read().is_empty() {
-                println!("Ошибка: Нельзя создать пустой проект. Добавьте хотя бы один объект.");
+                eprintln!("Ошибка: Нельзя создать пустой проект. Добавьте хотя бы один объект.");
                 return;
             }
-
-            // Создаем временный TOML файл
-            let temp_file = ensure_temp_config_path();
 
             // Формируем содержимое TOML файла
             let mut toml_content = String::new();
@@ -322,14 +330,8 @@ pub fn AddObjectDialogApp() -> Element {
                 }
             }
 
-            // Записываем файл
-            if let Err(e) = std::fs::write(&temp_file, toml_content) {
-                eprintln!("Ошибка записи временного файла: {}", e);
-            } else {
-                println!("Временный файл создан: {:?}", temp_file);
-                // Сигнализируем основному окну о необходимости загрузить файл
-                // В реальной реализации здесь будет IPC или другой механизм связи
-            }
+            // Выводим конфигурацию в stdout для передачи главному процессу
+            output_config_to_stdout(&toml_content);
 
             // Завершаем процесс диалогового окна
             std::process::exit(0);
@@ -642,10 +644,10 @@ pub fn RectangleDialogApp() -> Element {
                 mu: Some(mu_val),
             };
 
-            // Добавляем в временный TOML файл
-            add_object_to_temp_toml(new_object);
+            // Выводим объект в stdout для передачи главному процессу
+            output_object_to_stdout(&new_object);
 
-            println!("Прямоугольник успешно создан");
+            eprintln!("Прямоугольник успешно создан");
             std::process::exit(0);
         }
     };
@@ -783,10 +785,10 @@ pub fn SourceDialogApp() -> Element {
                 mu: None,
             };
 
-            // Добавляем в временный TOML файл
-            add_object_to_temp_toml(new_object);
+            // Выводим объект в stdout для передачи главному процессу
+            output_object_to_stdout(&new_object);
 
-            println!("Источник успешно создан");
+            eprintln!("Источник успешно создан");
             std::process::exit(0);
         }
     };
@@ -903,10 +905,10 @@ pub fn ProbeDialogApp() -> Element {
                 mu: None,
             };
 
-            // Добавляем в временный TOML файл
-            add_object_to_temp_toml(new_object);
+            // Выводим объект в stdout для передачи главному процессу
+            output_object_to_stdout(&new_object);
 
-            println!("Зонд успешно создан");
+            eprintln!("Зонд успешно создан");
             std::process::exit(0);
         }
     };
@@ -969,90 +971,28 @@ pub fn ProbeDialogApp() -> Element {
     )
 }
 
-/// Функция для добавления объекта в временный TOML файл
-fn add_object_to_temp_toml(object: ProjectObject) {
-    let temp_file = ensure_temp_config_path();
-
-    // Читаем существующий файл или создаем новый
-    let toml_content = if temp_file.exists() {
-        std::fs::read_to_string(&temp_file).unwrap_or_default()
-    } else {
-        // Создаем базовую структуру файла
-        "description = \"Временная конфигурация\"\n\n[modelling]\nsizex = 1.0\nsizey = 1.0\ndx = 0.01\ndy = 0.01\nmaxtime = 1.0\n\n[boundary]\n  [boundary.xmin]\n  type = \"PEC\"\n  param1 = \"...\"\n  param2 = \"...\"\n  [boundary.xmax]\n  type = \"PEC\"\n  param1 = \"...\"\n  param2 = \"...\"\n  [boundary.ymin]\n  type = \"PEC\"\n  param1 = \"...\"\n  param2 = \"...\"\n  [boundary.ymax]\n  type = \"PEC\"\n  param1 = \"...\"\n  param2 = \"...\"\n\n[geometry]\n\n[probes]\n\n[sources]\n".to_string()
-    };
-
-    // Создаем строку для добавления объекта
-    let object_section = match object.object_type {
+/// Выводит данные одного объекта в stdout для передачи главному процессу
+/// Формат: TYPE|x1|y1|x2|y2|eps|mu (для прямоугольника) или TYPE|x|y (для источника/зонда)
+fn output_object_to_stdout(object: &ProjectObject) {
+    let data = match object.object_type {
         ObjectType::Rectangle => {
-            if let (Some(x2), Some(y2), Some(eps), Some(mu)) =
-                (object.x2, object.y2, object.eps, object.mu)
-            {
-                format!(
-                    "  [[geometry.rectangle]]\n  x1 = {}\n  y1 = {}\n  x2 = {}\n  y2 = {}\n  eps = {}\n  mu = {}\n  sigma = 0.01\n  color = \"0, 0, 255\"\n",
-                    object.x1, object.y1, x2, y2, eps, mu
-                )
+            if let (Some(x2), Some(y2), Some(eps), Some(mu)) = (object.x2, object.y2, object.eps, object.mu) {
+                format!("RECTANGLE|{}|{}|{}|{}|{}|{}", object.x1, object.y1, x2, y2, eps, mu)
             } else {
-                return; // Недостаточно данных для прямоугольника
+                return;
             }
         }
         ObjectType::Source => {
-            format!(
-                "  [[sources.cylindrical]]\n  x = {}\n  y = {}\n  type = \"sin\"\n  param1 = \"...\"\n  param2 = \"...\"\n",
-                object.x1, object.y1
-            )
+            format!("SOURCE|{}|{}", object.x1, object.y1)
         }
         ObjectType::Probe => {
-            format!(
-                "  [[probes.probe]]\n  x = {}\n  y = {}\n  color = \"0, 255, 255\"\n",
-                object.x1, object.y1
-            )
+            format!("PROBE|{}|{}", object.x1, object.y1)
         }
     };
-
-    // Определяем целевой раздел
-    let target_section = match object.object_type {
-        ObjectType::Rectangle => "[geometry]",
-        ObjectType::Source => "[sources]",
-        ObjectType::Probe => "[probes]",
-    };
-
-    // Простая стратегия: добавляем объект в конец соответствующего раздела
-    let lines: Vec<&str> = toml_content.lines().collect();
-    let mut new_lines = Vec::new();
-    let mut found_section = false;
-    let mut in_target_section = false;
-
-    for line in lines.iter() {
-        new_lines.push(line.to_string());
-
-        if line.trim() == target_section {
-            found_section = true;
-            in_target_section = true;
-        } else if in_target_section && line.starts_with('[') && line.trim() != target_section {
-            // Нашли следующий раздел, вставляем объект перед ним
-            new_lines.insert(new_lines.len() - 1, object_section.clone());
-            in_target_section = false;
-        }
-    }
-
-    // Если мы все еще в целевом разделе (он последний), добавляем объект
-    if in_target_section {
-        new_lines.push(object_section.clone());
-    }
-
-    // Если раздел не найден, добавляем в конец
-    if !found_section {
-        new_lines.push(object_section.clone());
-    }
-
-    let updated_content = new_lines.join("\n");
-
-    // Записываем обновленный файл
-    if let Err(e) = std::fs::write(&temp_file, updated_content) {
-        eprintln!("Ошибка записи временного файла: {}", e);
-    } else {
-        println!("Объект добавлен в временный файл: {:?}", temp_file);
-    }
+    
+    println!("{}", CONFIG_START_MARKER);
+    println!("{}", data);
+    println!("{}", CONFIG_END_MARKER);
 }
 
 fn launch_fixed_dialog(app: fn() -> Element, title: &'static str, size: (f64, f64)) {
@@ -1071,7 +1011,7 @@ fn launch_fixed_dialog(app: fn() -> Element, title: &'static str, size: (f64, f6
 
 /// Запуск диалогового окна с настройками размера
 pub fn launch_dialog_app() {
-    launch_fixed_dialog(AddObjectDialogApp, "Настройки проекта", (600.0, 675.0));
+    launch_fixed_dialog(AddObjectDialogApp, "Настройки проекта", (600.0, 685.0));
 }
 
 /// Запуск диалогового окна для создания прямоугольника
@@ -1079,16 +1019,16 @@ pub fn launch_rectangle_dialog() {
     launch_fixed_dialog(
         RectangleDialogApp,
         "Создание прямоугольника",
-        (400.0, 300.0),
+        (400.0, 320.0),
     );
 }
 
 /// Запуск диалогового окна для создания источника
 pub fn launch_source_dialog() {
-    launch_fixed_dialog(SourceDialogApp, "Создание источника", (300.0, 200.0));
+    launch_fixed_dialog(SourceDialogApp, "Создание источника", (370.0, 200.0));
 }
 
 /// Запуск диалогового окна для создания зонда
 pub fn launch_probe_dialog() {
-    launch_fixed_dialog(ProbeDialogApp, "Создание зонда", (300.0, 200.0));
+    launch_fixed_dialog(ProbeDialogApp, "Создание зонда", (370.0, 200.0));
 }

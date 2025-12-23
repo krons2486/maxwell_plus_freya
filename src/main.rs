@@ -1,6 +1,6 @@
 use freya::prelude::*;
 use std::env;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::Arc;
 
 mod components;
@@ -8,13 +8,72 @@ mod dialog_window;
 mod fdtd;
 mod functions;
 
-use components::{ButtonBar, Footer, MenuBar, MySidebar, TabsBar, TabsContent};
-use fdtd::{Fdtd2dTe, FdtParams};
-use functions::{
-    cylindrical_sources_m_to_normalized, ensure_temp_config_path, is_generated_temp_config,
-    load_config, probes_m_to_normalized, rectangles_m_to_normalized, select_toml_file,
-    set_current_config_path, Modelling,
-};
+use components::{ButtonBar, Footer, MenuBar, MySidebar, SidebarSelection, TabsBar, TabsContent, WaveType};
+use dialog_window::{CONFIG_START_MARKER, CONFIG_END_MARKER};
+use fdtd::{Fdtd2dTe, Fdtd2dTm, FdtParams};
+use functions::{generate_toml_config, load_config, save_config_to_file, save_toml_file_dialog, select_toml_file, Modelling};
+use std::path::PathBuf;
+
+/// Парсит вывод диалога и извлекает данные конфигурации
+fn parse_dialog_output(output: &str) -> Option<String> {
+    let start_idx = output.find(CONFIG_START_MARKER)?;
+    let end_idx = output.find(CONFIG_END_MARKER)?;
+    
+    if start_idx < end_idx {
+        let config_start = start_idx + CONFIG_START_MARKER.len();
+        let config_data = output[config_start..end_idx].trim();
+        Some(config_data.to_string())
+    } else {
+        None
+    }
+}
+
+/// Парсит TOML-конфигурацию из stdout диалога настроек проекта
+fn parse_project_config(toml_str: &str) -> Option<functions::Config> {
+    toml::from_str(toml_str).ok()
+}
+
+/// Парсит данные одного объекта из stdout диалога (Rectangle/Source/Probe)
+fn parse_object_data(data: &str) -> Option<ObjectData> {
+    let parts: Vec<&str> = data.split('|').collect();
+    if parts.is_empty() {
+        return None;
+    }
+    
+    match parts[0] {
+        "RECTANGLE" if parts.len() >= 7 => {
+            Some(ObjectData::Rectangle {
+                x1: parts[1].parse().ok()?,
+                y1: parts[2].parse().ok()?,
+                x2: parts[3].parse().ok()?,
+                y2: parts[4].parse().ok()?,
+                eps: parts[5].parse().ok()?,
+                mu: parts[6].parse().ok()?,
+            })
+        }
+        "SOURCE" if parts.len() >= 3 => {
+            Some(ObjectData::Source {
+                x: parts[1].parse().ok()?,
+                y: parts[2].parse().ok()?,
+            })
+        }
+        "PROBE" if parts.len() >= 3 => {
+            Some(ObjectData::Probe {
+                x: parts[1].parse().ok()?,
+                y: parts[2].parse().ok()?,
+            })
+        }
+        _ => None
+    }
+}
+
+/// Данные объекта, полученные из диалога
+#[allow(dead_code)]
+enum ObjectData {
+    Rectangle { x1: f32, y1: f32, x2: f32, y2: f32, eps: f32, mu: f32 },
+    Source { x: f32, y: f32 },
+    Probe { x: f32, y: f32 },
+}
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -31,33 +90,12 @@ fn main() {
         // Запускаем диалог создания зонда
         dialog_window::launch_probe_dialog();
     } else {
-        // Создаем (или получаем) путь к временному файлу при запуске
-        let temp_file = ensure_temp_config_path();
-        if temp_file.exists() {
-            println!(
-                "Обнаружен временный файл конфигурации от предыдущей сессии: {:?}",
-                temp_file
-            );
-            println!("Вы можете использовать 'Настройки проекта' для загрузки этой конфигурации");
-        }
-
-        // Регистрируем обработчик очистки временного файла при закрытии программы
-        let cleanup_path = temp_file.clone();
-        let cleanup_handler = move || {
-            if is_generated_temp_config(&cleanup_path) && cleanup_path.exists() {
-                if let Err(e) = std::fs::remove_file(&cleanup_path) {
-                    eprintln!("Не удалось удалить временный файл: {}", e);
-                } else {
-                    println!("Временный файл удален при закрытии программы");
-                }
-            }
-        };
-
         // Запускаем основное приложение
-        launch(app);
-
-        // Вызываем очистку при завершении
-        cleanup_handler();
+        launch_cfg(
+            app,
+            LaunchConfig::<()>::new()
+                .with_size(1600.0, 900.0)
+        );
     }
 }
 
@@ -65,82 +103,126 @@ fn main() {
 fn app() -> Element {
     let open_dropdown = use_signal(|| String::new());
     let active_tab = use_signal(|| "geometry".to_string());
+
+    // Нормализованные координаты для отображения (0..1)
     let rectangles = use_signal(|| Arc::<Vec<((f32, f32), (f32, f32))>>::new(Vec::new()));
     let sources = use_signal(|| Arc::<Vec<(f32, f32)>>::new(Vec::new()));
     let probes = use_signal(|| Arc::<Vec<(f32, f32)>>::new(Vec::new()));
+
+    // Параметры моделирования
     let modelling = use_signal(|| None::<Modelling>);
     let running = use_signal(|| false);
-    let resuming = use_signal(|| false); // Для продолжения расчёта без сброса
+    let resuming = use_signal(|| false);
     let step_counter = use_signal(|| 0_usize);
 
-    // Симуляция FDTD - хранится на уровне приложения, чтобы не сбрасываться при переключении вкладок
-    let sim = use_signal(|| Fdtd2dTe::new(FdtParams::default()));
-    // Снапшот данных поля для отрисовки
+    // Счётчики для уникальных номеров объектов
+    let next_rect_id = use_signal(|| 1_usize);
+    let next_source_id = use_signal(|| 1_usize);
+    let next_probe_id = use_signal(|| 1_usize);
+
+    // Векторы ID для отслеживания порядковых номеров объектов
+    let rect_ids = use_signal(|| Arc::<Vec<usize>>::new(Vec::new()));
+    let source_ids = use_signal(|| Arc::<Vec<usize>>::new(Vec::new()));
+    let probe_ids = use_signal(|| Arc::<Vec<usize>>::new(Vec::new()));
+
+    // Путь к текущему открытому файлу (для функции сохранения)
+    let current_file_path = use_signal(|| None::<PathBuf>);
+
+    // Общий сигнал для выделения объектов (синхронизация между боковой панелью и холстом)
+    let sidebar_selection = use_signal(|| None::<SidebarSelection>);
+
+    // Тип волны и симуляции FDTD для TE и TM
+    let wave_type = use_signal(|| WaveType::TE);
+    let sim_te = use_signal(|| Fdtd2dTe::new(FdtParams::default()));
+    let sim_tm = use_signal(|| Fdtd2dTm::new(FdtParams::default()));
     let field_data = use_signal(|| {
         let s = Fdtd2dTe::new(FdtParams::default());
         let (sx, sy) = s.size();
         (sx, sy, s.ey().to_vec())
     });
 
-    // Этот node сигнал привяжем к панели, где рисуем
     let (canvas_ref, canvas_size) = use_node_signal();
 
-    // Обработчик "Open Folder"
+    // Обработчик "Open Folder" - загрузка конфигурации из файла
     let on_open = {
         let mut rectangles = rectangles.clone();
         let mut sources = sources.clone();
         let mut probes = probes.clone();
         let mut modelling = modelling.clone();
         let canvas_size = canvas_size.clone();
+        let mut next_rect_id = next_rect_id.clone();
+        let mut next_source_id = next_source_id.clone();
+        let mut next_probe_id = next_probe_id.clone();
+        let mut rect_ids = rect_ids.clone();
+        let mut source_ids = source_ids.clone();
+        let mut probe_ids = probe_ids.clone();
+        let mut current_file_path = current_file_path.clone();
+
         move |_| {
             if let Some(path) = select_toml_file() {
                 println!("Выбран файл: {:?}", path);
                 match load_config(&path) {
                     Ok(cfg) => {
                         println!("Загружена конфигурация:\n{:#?}", cfg);
-                        set_current_config_path(&path);
 
-                        // сохраняем modelling
+                        // Сохраняем путь к открытому файлу для последующего сохранения
+                        current_file_path.set(Some(path));
+
                         let m = cfg.modelling;
                         modelling.set(Some(m.clone()));
 
-                        // Измеряем реальные размеры холста (для информации)
                         let area = canvas_size.peek().area;
-                        let canvas_w = area.width();
-                        let canvas_h = area.height();
                         println!(
                             "Холст (px): {:.0}×{:.0}; область (m): {}×{}",
-                            canvas_w, canvas_h, m.sizex, m.sizey
-                        );
-
-                        // очищаем старые данные
-                        rectangles.set(Arc::new(Vec::new()));
-                        sources.set(Arc::new(Vec::new()));
-                        probes.set(Arc::new(Vec::new()));
-
-                        // Конвертируем прямоугольники из метров в нормализованные (0..1)
-                        let normalized_rects =
-                            rectangles_m_to_normalized(&cfg.geometry.rectangle, m.sizex, m.sizey);
-
-                        // Конвертируем зонды из метров в нормализованные (0..1)
-                        let normalized_probes =
-                            probes_m_to_normalized(&cfg.probes.probe, m.sizex, m.sizey);
-
-                        // Конвертируем цилиндрические источники из метров в нормализованные (0..1)
-                        let normalized_sources = cylindrical_sources_m_to_normalized(
-                            &cfg.sources.cylindrical,
+                            area.width(),
+                            area.height(),
                             m.sizex,
-                            m.sizey,
+                            m.sizey
                         );
 
-                        println!("Прямоугольники (нормализованные): {:#?}", normalized_rects);
-                        println!("Зонды (нормализованные): {:#?}", normalized_probes);
-                        println!("Источники (нормализованные): {:#?}", normalized_sources);
+                        // Конвертируем в нормализованные координаты
+                        let norm_rects: Vec<((f32, f32), (f32, f32))> = cfg
+                            .geometry
+                            .rectangle
+                            .iter()
+                            .map(|r| {
+                                (
+                                    (r.x1 / m.sizex, r.y1 / m.sizey),
+                                    (r.x2 / m.sizex, r.y2 / m.sizey),
+                                )
+                            })
+                            .collect();
 
-                        // Устанавливаем нормализованные координаты — канва перерисует автоматически
-                        rectangles.set(Arc::new(normalized_rects));
-                        probes.set(Arc::new(normalized_probes));
-                        sources.set(Arc::new(normalized_sources));
+                        let norm_sources: Vec<(f32, f32)> = cfg
+                            .sources
+                            .cylindrical
+                            .iter()
+                            .map(|s| (s.x / m.sizex, s.y / m.sizey))
+                            .collect();
+
+                        let norm_probes: Vec<(f32, f32)> = cfg
+                            .probes
+                            .probe
+                            .iter()
+                            .map(|p| (p.x / m.sizex, p.y / m.sizey))
+                            .collect();
+
+                        // Генерируем ID
+                        let rect_count = norm_rects.len();
+                        let source_count = norm_sources.len();
+                        let probe_count = norm_probes.len();
+
+                        rect_ids.set(Arc::new((1..=rect_count).collect()));
+                        source_ids.set(Arc::new((1..=source_count).collect()));
+                        probe_ids.set(Arc::new((1..=probe_count).collect()));
+
+                        next_rect_id.set(rect_count + 1);
+                        next_source_id.set(source_count + 1);
+                        next_probe_id.set(probe_count + 1);
+
+                        rectangles.set(Arc::new(norm_rects));
+                        sources.set(Arc::new(norm_sources));
+                        probes.set(Arc::new(norm_probes));
                     }
                     Err(e) => {
                         eprintln!("Ошибка загрузки конфигурации: {:?}", e);
@@ -150,67 +232,63 @@ fn app() -> Element {
         }
     };
 
-    // Обработчик открытия окна настроек проекта — теперь открываем отдельное системное окно (второй процесс)
+    // Обработчик открытия диалога настроек проекта (отдельное окно)
     let on_open_project_settings = {
         let mut rectangles = rectangles.clone();
         let mut sources = sources.clone();
         let mut probes = probes.clone();
         let mut modelling = modelling.clone();
-        let canvas_size = canvas_size.clone();
+        let mut next_rect_id = next_rect_id.clone();
+        let mut next_source_id = next_source_id.clone();
+        let mut next_probe_id = next_probe_id.clone();
+        let mut rect_ids = rect_ids.clone();
+        let mut source_ids = source_ids.clone();
+        let mut probe_ids = probe_ids.clone();
+        
         move |_| {
             if let Ok(current_exe) = std::env::current_exe() {
-                match Command::new(current_exe).arg("--add-dialog").spawn() {
-                    Ok(mut child) => {
-                        // Дожидаемся закрытия диалогового окна
-                        let _ = child.wait();
+                // Запускаем диалог и захватываем stdout
+                match Command::new(current_exe)
+                    .arg("--add-dialog")
+                    .stdout(Stdio::piped())
+                    .spawn()
+                {
+                    Ok(child) => {
+                        match child.wait_with_output() {
+                            Ok(output) => {
+                                let stdout = String::from_utf8_lossy(&output.stdout);
+                                
+                                // Парсим конфигурацию из stdout
+                                if let Some(config_str) = parse_dialog_output(&stdout) {
+                                    if let Some(cfg) = parse_project_config(&config_str) {
+                                        let m = cfg.modelling;
+                                        modelling.set(Some(m.clone()));
 
-                        // Сразу после закрытия читаем временный файл
-                        let temp_file = ensure_temp_config_path();
-                        if temp_file.exists() {
-                            println!("Найден временный файл конфигурации: {:?}", temp_file);
-                            match load_config(&temp_file) {
-                                Ok(cfg) => {
-                                    println!("Загружена временная конфигурация:\n{:#?}", cfg);
+                                        let norm_rects: Vec<_> = cfg.geometry.rectangle.iter()
+                                            .map(|r| ((r.x1 / m.sizex, r.y1 / m.sizey), (r.x2 / m.sizex, r.y2 / m.sizey)))
+                                            .collect();
+                                        let norm_sources: Vec<_> = cfg.sources.cylindrical.iter()
+                                            .map(|s| (s.x / m.sizex, s.y / m.sizey))
+                                            .collect();
+                                        let norm_probes: Vec<_> = cfg.probes.probe.iter()
+                                            .map(|p| (p.x / m.sizex, p.y / m.sizey))
+                                            .collect();
 
-                                    let m = cfg.modelling;
-                                    modelling.set(Some(m.clone()));
+                                        rect_ids.set(Arc::new((1..=norm_rects.len()).collect()));
+                                        source_ids.set(Arc::new((1..=norm_sources.len()).collect()));
+                                        probe_ids.set(Arc::new((1..=norm_probes.len()).collect()));
 
-                                    let area = canvas_size.peek().area;
-                                    let canvas_w = area.width();
-                                    let canvas_h = area.height();
-                                    println!(
-                                        "Холст (px): {:.0}×{:.0}; область (m): {}×{}",
-                                        canvas_w, canvas_h, m.sizex, m.sizey
-                                    );
+                                        next_rect_id.set(norm_rects.len() + 1);
+                                        next_source_id.set(norm_sources.len() + 1);
+                                        next_probe_id.set(norm_probes.len() + 1);
 
-                                    rectangles.set(Arc::new(Vec::new()));
-                                    sources.set(Arc::new(Vec::new()));
-                                    probes.set(Arc::new(Vec::new()));
-
-                                    let normalized_rects = rectangles_m_to_normalized(
-                                        &cfg.geometry.rectangle,
-                                        m.sizex,
-                                        m.sizey,
-                                    );
-                                    let normalized_probes =
-                                        probes_m_to_normalized(&cfg.probes.probe, m.sizex, m.sizey);
-                                    let normalized_sources = cylindrical_sources_m_to_normalized(
-                                        &cfg.sources.cylindrical,
-                                        m.sizex,
-                                        m.sizey,
-                                    );
-
-                                    rectangles.set(Arc::new(normalized_rects));
-                                    probes.set(Arc::new(normalized_probes));
-                                    sources.set(Arc::new(normalized_sources));
-
-                                    // Временный файл сохраняется до закрытия программы
-                                    println!("Временный файл сохранен: {:?}", temp_file);
-                                }
-                                Err(e) => {
-                                    eprintln!("Ошибка загрузки временной конфигурации: {:?}", e);
+                                        rectangles.set(Arc::new(norm_rects));
+                                        sources.set(Arc::new(norm_sources));
+                                        probes.set(Arc::new(norm_probes));
+                                    }
                                 }
                             }
+                            Err(e) => eprintln!("Ошибка при ожидании процесса: {e:?}"),
                         }
                     }
                     Err(e) => {
@@ -221,60 +299,56 @@ fn app() -> Element {
         }
     };
 
-    // Обработчик создания прямоугольника
+    // Обработчик создания прямоугольника (отдельное окно)
     let on_create_rectangle = {
-        let modelling = modelling.clone();
+        let modelling_check = modelling.clone();
         let mut rectangles = rectangles.clone();
-        let mut sources = sources.clone();
-        let mut probes = probes.clone();
-        let canvas_size = canvas_size.clone();
+        let mut next_rect_id = next_rect_id.clone();
+        let mut rect_ids = rect_ids.clone();
+        
         move |_| {
-            // Проверяем, что настройки проекта заданы
-            if modelling.read().is_none() {
-                println!("Ошибка: Сначала настройте параметры рабочей области через кнопку 'Add'");
-                return;
-            }
-
+            let m = match modelling_check.read().clone() {
+                Some(m) => m,
+                None => {
+                    eprintln!("Ошибка: Сначала настройте параметры рабочей области через кнопку 'Add'");
+                    return;
+                }
+            };
+            
             if let Ok(current_exe) = std::env::current_exe() {
-                match Command::new(current_exe).arg("--rectangle-dialog").spawn() {
-                    Ok(mut child) => {
-                        let _ = child.wait();
-
-                        // Перезагружаем временный файл для обновления холста
-                        let temp_file = ensure_temp_config_path();
-                        if temp_file.exists() {
-                            match load_config(&temp_file) {
-                                Ok(cfg) => {
-                                    let m = cfg.modelling;
-                                    let area = canvas_size.peek().area;
-                                    let canvas_w = area.width();
-                                    let canvas_h = area.height();
-                                    println!(
-                                        "Холст (px): {:.0}×{:.0}; область (m): {}×{}",
-                                        canvas_w, canvas_h, m.sizex, m.sizey
-                                    );
-
-                                    let normalized_rects = rectangles_m_to_normalized(
-                                        &cfg.geometry.rectangle,
-                                        m.sizex,
-                                        m.sizey,
-                                    );
-                                    let normalized_probes =
-                                        probes_m_to_normalized(&cfg.probes.probe, m.sizex, m.sizey);
-                                    let normalized_sources = cylindrical_sources_m_to_normalized(
-                                        &cfg.sources.cylindrical,
-                                        m.sizex,
-                                        m.sizey,
-                                    );
-
-                                    rectangles.set(Arc::new(normalized_rects));
-                                    probes.set(Arc::new(normalized_probes));
-                                    sources.set(Arc::new(normalized_sources));
-                                }
-                                Err(e) => {
-                                    eprintln!("Ошибка загрузки временной конфигурации: {:?}", e);
+                match Command::new(current_exe)
+                    .arg("--rectangle-dialog")
+                    .stdout(Stdio::piped())
+                    .spawn()
+                {
+                    Ok(child) => {
+                        match child.wait_with_output() {
+                            Ok(output) => {
+                                let stdout = String::from_utf8_lossy(&output.stdout);
+                                
+                                if let Some(data_str) = parse_dialog_output(&stdout) {
+                                    if let Some(ObjectData::Rectangle { x1, y1, x2, y2, eps: _, mu: _ }) = parse_object_data(&data_str) {
+                                        // Нормализуем координаты
+                                        let nx1 = x1 / m.sizex;
+                                        let ny1 = y1 / m.sizey;
+                                        let nx2 = x2 / m.sizex;
+                                        let ny2 = y2 / m.sizey;
+                                        
+                                        // Добавляем прямоугольник
+                                        let mut rects = rectangles.read().as_ref().clone();
+                                        rects.push(((nx1, ny1), (nx2, ny2)));
+                                        rectangles.set(Arc::new(rects));
+                                        
+                                        // Обновляем ID
+                                        let mut ids = rect_ids.read().as_ref().clone();
+                                        let new_id = *next_rect_id.read();
+                                        ids.push(new_id);
+                                        rect_ids.set(Arc::new(ids));
+                                        next_rect_id.set(new_id + 1);
+                                    }
                                 }
                             }
+                            Err(e) => eprintln!("Ошибка при ожидании процесса: {e:?}"),
                         }
                     }
                     Err(e) => {
@@ -285,60 +359,54 @@ fn app() -> Element {
         }
     };
 
-    // Обработчик создания источника
+    // Обработчик создания источника (отдельное окно)
     let on_create_source = {
-        let modelling = modelling.clone();
-        let mut rectangles = rectangles.clone();
+        let modelling_check = modelling.clone();
         let mut sources = sources.clone();
-        let mut probes = probes.clone();
-        let canvas_size = canvas_size.clone();
+        let mut next_source_id = next_source_id.clone();
+        let mut source_ids = source_ids.clone();
+        
         move |_| {
-            // Проверяем, что настройки проекта заданы
-            if modelling.read().is_none() {
-                println!("Ошибка: Сначала настройте параметры рабочей области через кнопку 'Add'");
-                return;
-            }
-
+            let m = match modelling_check.read().clone() {
+                Some(m) => m,
+                None => {
+                    eprintln!("Ошибка: Сначала настройте параметры рабочей области через кнопку 'Add'");
+                    return;
+                }
+            };
+            
             if let Ok(current_exe) = std::env::current_exe() {
-                match Command::new(current_exe).arg("--source-dialog").spawn() {
-                    Ok(mut child) => {
-                        let _ = child.wait();
-
-                        // Перезагружаем временный файл для обновления холста
-                        let temp_file = ensure_temp_config_path();
-                        if temp_file.exists() {
-                            match load_config(&temp_file) {
-                                Ok(cfg) => {
-                                    let m = cfg.modelling;
-                                    let area = canvas_size.peek().area;
-                                    let canvas_w = area.width();
-                                    let canvas_h = area.height();
-                                    println!(
-                                        "Холст (px): {:.0}×{:.0}; область (m): {}×{}",
-                                        canvas_w, canvas_h, m.sizex, m.sizey
-                                    );
-
-                                    let normalized_rects = rectangles_m_to_normalized(
-                                        &cfg.geometry.rectangle,
-                                        m.sizex,
-                                        m.sizey,
-                                    );
-                                    let normalized_probes =
-                                        probes_m_to_normalized(&cfg.probes.probe, m.sizex, m.sizey);
-                                    let normalized_sources = cylindrical_sources_m_to_normalized(
-                                        &cfg.sources.cylindrical,
-                                        m.sizex,
-                                        m.sizey,
-                                    );
-
-                                    rectangles.set(Arc::new(normalized_rects));
-                                    probes.set(Arc::new(normalized_probes));
-                                    sources.set(Arc::new(normalized_sources));
-                                }
-                                Err(e) => {
-                                    eprintln!("Ошибка загрузки временной конфигурации: {:?}", e);
+                match Command::new(current_exe)
+                    .arg("--source-dialog")
+                    .stdout(Stdio::piped())
+                    .spawn()
+                {
+                    Ok(child) => {
+                        match child.wait_with_output() {
+                            Ok(output) => {
+                                let stdout = String::from_utf8_lossy(&output.stdout);
+                                
+                                if let Some(data_str) = parse_dialog_output(&stdout) {
+                                    if let Some(ObjectData::Source { x, y }) = parse_object_data(&data_str) {
+                                        // Нормализуем координаты
+                                        let nx = x / m.sizex;
+                                        let ny = y / m.sizey;
+                                        
+                                        // Добавляем источник
+                                        let mut srcs = sources.read().as_ref().clone();
+                                        srcs.push((nx, ny));
+                                        sources.set(Arc::new(srcs));
+                                        
+                                        // Обновляем ID
+                                        let mut ids = source_ids.read().as_ref().clone();
+                                        let new_id = *next_source_id.read();
+                                        ids.push(new_id);
+                                        source_ids.set(Arc::new(ids));
+                                        next_source_id.set(new_id + 1);
+                                    }
                                 }
                             }
+                            Err(e) => eprintln!("Ошибка при ожидании процесса: {e:?}"),
                         }
                     }
                     Err(e) => {
@@ -349,60 +417,54 @@ fn app() -> Element {
         }
     };
 
-    // Обработчик создания зонда
+    // Обработчик создания датчика (отдельное окно)
     let on_create_probe = {
-        let modelling = modelling.clone();
-        let mut rectangles = rectangles.clone();
-        let mut sources = sources.clone();
+        let modelling_check = modelling.clone();
         let mut probes = probes.clone();
-        let canvas_size = canvas_size.clone();
+        let mut next_probe_id = next_probe_id.clone();
+        let mut probe_ids = probe_ids.clone();
+        
         move |_| {
-            // Проверяем, что настройки проекта заданы
-            if modelling.read().is_none() {
-                println!("Ошибка: Сначала настройте параметры рабочей области через кнопку 'Add'");
-                return;
-            }
-
+            let m = match modelling_check.read().clone() {
+                Some(m) => m,
+                None => {
+                    eprintln!("Ошибка: Сначала настройте параметры рабочей области через кнопку 'Add'");
+                    return;
+                }
+            };
+            
             if let Ok(current_exe) = std::env::current_exe() {
-                match Command::new(current_exe).arg("--probe-dialog").spawn() {
-                    Ok(mut child) => {
-                        let _ = child.wait();
-
-                        // Перезагружаем временный файл для обновления холста
-                        let temp_file = ensure_temp_config_path();
-                        if temp_file.exists() {
-                            match load_config(&temp_file) {
-                                Ok(cfg) => {
-                                    let m = cfg.modelling;
-                                    let area = canvas_size.peek().area;
-                                    let canvas_w = area.width();
-                                    let canvas_h = area.height();
-                                    println!(
-                                        "Холст (px): {:.0}×{:.0}; область (m): {}×{}",
-                                        canvas_w, canvas_h, m.sizex, m.sizey
-                                    );
-
-                                    let normalized_rects = rectangles_m_to_normalized(
-                                        &cfg.geometry.rectangle,
-                                        m.sizex,
-                                        m.sizey,
-                                    );
-                                    let normalized_probes =
-                                        probes_m_to_normalized(&cfg.probes.probe, m.sizex, m.sizey);
-                                    let normalized_sources = cylindrical_sources_m_to_normalized(
-                                        &cfg.sources.cylindrical,
-                                        m.sizex,
-                                        m.sizey,
-                                    );
-
-                                    rectangles.set(Arc::new(normalized_rects));
-                                    probes.set(Arc::new(normalized_probes));
-                                    sources.set(Arc::new(normalized_sources));
-                                }
-                                Err(e) => {
-                                    eprintln!("Ошибка загрузки временной конфигурации: {:?}", e);
+                match Command::new(current_exe)
+                    .arg("--probe-dialog")
+                    .stdout(Stdio::piped())
+                    .spawn()
+                {
+                    Ok(child) => {
+                        match child.wait_with_output() {
+                            Ok(output) => {
+                                let stdout = String::from_utf8_lossy(&output.stdout);
+                                
+                                if let Some(data_str) = parse_dialog_output(&stdout) {
+                                    if let Some(ObjectData::Probe { x, y }) = parse_object_data(&data_str) {
+                                        // Нормализуем координаты
+                                        let nx = x / m.sizex;
+                                        let ny = y / m.sizey;
+                                        
+                                        // Добавляем датчик
+                                        let mut prbs = probes.read().as_ref().clone();
+                                        prbs.push((nx, ny));
+                                        probes.set(Arc::new(prbs));
+                                        
+                                        // Обновляем ID
+                                        let mut ids = probe_ids.read().as_ref().clone();
+                                        let new_id = *next_probe_id.read();
+                                        ids.push(new_id);
+                                        probe_ids.set(Arc::new(ids));
+                                        next_probe_id.set(new_id + 1);
+                                    }
                                 }
                             }
+                            Err(e) => eprintln!("Ошибка при ожидании процесса: {e:?}"),
                         }
                     }
                     Err(e) => {
@@ -413,13 +475,77 @@ fn app() -> Element {
         }
     };
 
-    // Показываем основной интерфейс
+    // Обработчик "Save" - сохранение конфигурации в файл
+    let on_save = {
+        let modelling = modelling.clone();
+        let rectangles = rectangles.clone();
+        let sources = sources.clone();
+        let probes = probes.clone();
+        let mut current_file_path = current_file_path.clone();
+
+        move |_| {
+            // Проверяем, что есть данные для сохранения
+            let m = match modelling.read().clone() {
+                Some(m) => m,
+                None => {
+                    eprintln!("Ошибка: Нет данных для сохранения. Сначала настройте параметры рабочей области.");
+                    return;
+                }
+            };
+
+            // Определяем путь для сохранения
+            // Сначала читаем текущий путь во временную переменную
+            let existing_path = current_file_path.read().clone();
+            
+            let save_path = if let Some(path) = existing_path {
+                // Если файл уже открыт, сохраняем в него
+                path
+            } else {
+                // Иначе показываем диалог выбора файла
+                match save_toml_file_dialog() {
+                    Some(path) => {
+                        // Сохраняем путь для последующих сохранений
+                        current_file_path.set(Some(path.clone()));
+                        path
+                    }
+                    None => {
+                        println!("Сохранение отменено пользователем");
+                        return;
+                    }
+                }
+            };
+
+            // Генерируем TOML-контент
+            let rects = rectangles.read();
+            let srcs = sources.read();
+            let prbs = probes.read();
+            
+            let toml_content = generate_toml_config(&m, &rects, &srcs, &prbs);
+
+            // Сохраняем в файл
+            match save_config_to_file(&save_path, &toml_content) {
+                Ok(()) => {
+                    println!("Конфигурация успешно сохранена в: {:?}", save_path);
+                }
+                Err(e) => {
+                    eprintln!("Ошибка сохранения конфигурации: {:?}", e);
+                }
+            }
+        }
+    };
+
     rsx!(
-        rect { content:"flex", direction:"vertical", width:"100%", height:"100%",
+        rect {
+            content: "flex",
+            direction: "vertical",
+            width: "100%",
+            height: "100%",
+
             MenuBar { open_dropdown: open_dropdown.clone() }
             ButtonBar {
                 active_tab: active_tab.clone(),
                 on_open: on_open.clone(),
+                on_save: on_save.clone(),
                 on_open_project_settings: on_open_project_settings.clone(),
                 on_create_rectangle: on_create_rectangle.clone(),
                 on_create_source: on_create_source.clone(),
@@ -428,11 +554,10 @@ fn app() -> Element {
                     let mut running = running.clone();
                     let mut resuming = resuming.clone();
                     move |_| {
-                        // Нельзя нажать Start, если расчёт уже запущен
                         if *running.read() {
                             return;
                         }
-                        resuming.set(false); // Start = сброс и запуск с начала
+                        resuming.set(false);
                         running.set(true);
                     }
                 },
@@ -444,23 +569,49 @@ fn app() -> Element {
                     let mut running = running.clone();
                     let mut resuming = resuming.clone();
                     move |_| {
-                        // Нельзя нажать Resume, если расчёт уже запущен
                         if *running.read() {
                             return;
                         }
-                        resuming.set(true); // Resume = продолжение без сброса
+                        resuming.set(true);
                         running.set(true);
                     }
                 },
             }
 
-            rect { width:"100%", height:"flex(1)",
-                ResizableContainer { direction:"horizontal",
-                    ResizablePanel { initial_size:20.0, min_size:10.0, MySidebar {} }
-                    ResizablePanel { initial_size:100.0, min_size:50.0,
-                        rect { reference: canvas_ref, content:"flex", direction:"vertical",
-                            rect { height:"40", TabsBar { active_tab: active_tab.clone() } }
-                            rect { height:"flex(1)",
+            rect {
+                width: "100%",
+                height: "flex(1)",
+                ResizableContainer {
+                    direction: "horizontal",
+                    ResizablePanel {
+                        initial_size: 20.0,
+                        min_size: 10.0,
+                        MySidebar {
+                            rectangles: rectangles.clone(),
+                            sources: sources.clone(),
+                            probes: probes.clone(),
+                            next_rect_id: next_rect_id.clone(),
+                            next_source_id: next_source_id.clone(),
+                            next_probe_id: next_probe_id.clone(),
+                            rect_ids: rect_ids.clone(),
+                            source_ids: source_ids.clone(),
+                            probe_ids: probe_ids.clone(),
+                            selected: sidebar_selection.clone(),
+                        }
+                    }
+                    ResizablePanel {
+                        initial_size: 100.0,
+                        min_size: 50.0,
+                        rect {
+                            reference: canvas_ref,
+                            content: "flex",
+                            direction: "vertical",
+                            rect {
+                                height: "40",
+                                TabsBar { active_tab: active_tab.clone() }
+                            }
+                            rect {
+                                height: "flex(1)",
                                 TabsContent {
                                     active_tab: active_tab.clone(),
                                     rectangles: rectangles.clone(),
@@ -469,8 +620,11 @@ fn app() -> Element {
                                     running: running.clone(),
                                     resuming: resuming.clone(),
                                     step_counter: step_counter.clone(),
-                                    sim: sim.clone(),
+                                    sim_te: sim_te.clone(),
+                                    sim_tm: sim_tm.clone(),
+                                    wave_type: wave_type.clone(),
                                     field_data: field_data.clone(),
+                                    sidebar_selection: sidebar_selection.clone(),
                                 }
                             }
                         }
@@ -478,7 +632,7 @@ fn app() -> Element {
                 }
             }
 
-            Footer { step_counter: step_counter.clone() }
+            Footer { step_counter: step_counter.clone(), wave_type: wave_type.clone() }
         }
     )
 }

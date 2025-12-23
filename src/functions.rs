@@ -1,14 +1,10 @@
-use rand::{distributions::Alphanumeric, thread_rng, Rng};
 use serde::Deserialize;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-const TEMP_CONFIG_ENV_KEY: &str = "MAXWELL_TEMP_CONFIG_PATH";
-const TEMP_CONFIG_PREFIX: &str = "maxwell_temp_config_";
-const TEMP_CONFIG_SUFFIX_LEN: usize = 8;
 const DEFAULT_DESCRIPTION: &str = "Временная конфигурация";
 
-/// Диалог выбора TOML‑файла
+/// Диалог выбора TOML‑файла для открытия
 pub fn select_toml_file() -> Option<PathBuf> {
     rfd::FileDialog::new()
         .add_filter("TOML", &["toml"])
@@ -16,54 +12,107 @@ pub fn select_toml_file() -> Option<PathBuf> {
         .pick_file()
 }
 
-/// Возвращает текущий путь к конфигурационному файлу, если он уже задан.
-pub fn current_config_path() -> Option<PathBuf> {
-    std::env::var(TEMP_CONFIG_ENV_KEY)
-        .ok()
-        .filter(|path| !path.is_empty())
-        .map(PathBuf::from)
+/// Диалог выбора места для сохранения TOML‑файла
+pub fn save_toml_file_dialog() -> Option<PathBuf> {
+    rfd::FileDialog::new()
+        .add_filter("TOML", &["toml"])
+        .set_title("Сохранить конфигурацию")
+        .set_file_name("config.toml")
+        .save_file()
 }
 
-/// Устанавливает путь к конфигурационному файлу и очищает предыдущий
-/// временный файл, если он больше не нужен.
-pub fn set_current_config_path<P: AsRef<Path>>(path: P) {
-    let new_path = path.as_ref();
-    if let Some(old_path) = current_config_path() {
-        if old_path != new_path && is_generated_temp_config(&old_path) && old_path.exists() {
-            let _ = std::fs::remove_file(&old_path);
-        }
+/// Генерирует TOML-конфигурацию из данных в памяти
+pub fn generate_toml_config(
+    modelling: &Modelling,
+    rectangles: &[((f32, f32), (f32, f32))],
+    sources: &[(f32, f32)],
+    probes: &[(f32, f32)],
+) -> String {
+    let mut toml = String::new();
+    
+    // Description
+    writeln!(toml, "description = \"{}\"", DEFAULT_DESCRIPTION).unwrap();
+    writeln!(toml).unwrap();
+    
+    // Modelling section
+    writeln!(toml, "# Параметры моделирования").unwrap();
+    writeln!(toml, "[modelling]").unwrap();
+    writeln!(toml, "sizex = {}   # Размер области моделирования в метрах", modelling.sizex).unwrap();
+    writeln!(toml, "sizey = {}   # Размер области моделирования в метрах", modelling.sizey).unwrap();
+    writeln!(toml, "dx = {}   # Размер ячейки в метрах", modelling.dx).unwrap();
+    writeln!(toml, "dy = {}   # Размер ячейки в метрах", modelling.dy).unwrap();
+    writeln!(toml, "maxtime = {}   # Время моделирования в секундах", modelling.maxtime).unwrap();
+    writeln!(toml).unwrap();
+    
+    // Boundary section (default PEC)
+    writeln!(toml, "# Граничные условия").unwrap();
+    writeln!(toml, "[boundary]").unwrap();
+    for side in &["xmin", "xmax", "ymin", "ymax"] {
+        writeln!(toml, "  [boundary.{}]", side).unwrap();
+        writeln!(toml, "  type = \"PEC\"").unwrap();
+        writeln!(toml, "  param1 = \"...\"").unwrap();
+        writeln!(toml, "  param2 = \"...\"").unwrap();
+        writeln!(toml).unwrap();
     }
-    std::env::set_var(TEMP_CONFIG_ENV_KEY, new_path);
+    
+    // Geometry section
+    writeln!(toml, "# Геометрия моделируемой задачи").unwrap();
+    writeln!(toml, "[geometry]").unwrap();
+    for ((x1_norm, y1_norm), (x2_norm, y2_norm)) in rectangles {
+        // Денормализуем координаты обратно в метры
+        let x1 = x1_norm * modelling.sizex;
+        let y1 = y1_norm * modelling.sizey;
+        let x2 = x2_norm * modelling.sizex;
+        let y2 = y2_norm * modelling.sizey;
+        
+        writeln!(toml, "  [[geometry.rectangle]]").unwrap();
+        writeln!(toml, "  x1 = {}", x1).unwrap();
+        writeln!(toml, "  y1 = {}", y1).unwrap();
+        writeln!(toml, "  x2 = {}", x2).unwrap();
+        writeln!(toml, "  y2 = {}", y2).unwrap();
+        writeln!(toml, "  eps = 4.0").unwrap();
+        writeln!(toml, "  mu = 1.0").unwrap();
+        writeln!(toml, "  sigma = 0.01").unwrap();
+        writeln!(toml, "  color = \"0, 0, 255\"").unwrap();
+        writeln!(toml).unwrap();
+    }
+    
+    // Probes section
+    writeln!(toml, "# Список пробников").unwrap();
+    writeln!(toml, "[probes]").unwrap();
+    for (x_norm, y_norm) in probes {
+        let x = x_norm * modelling.sizex;
+        let y = y_norm * modelling.sizey;
+        
+        writeln!(toml, "  [[probes.probe]]").unwrap();
+        writeln!(toml, "  x = {}", x).unwrap();
+        writeln!(toml, "  y = {}", y).unwrap();
+        writeln!(toml, "  color = \"0, 255, 255\"").unwrap();
+        writeln!(toml).unwrap();
+    }
+    
+    // Sources section
+    writeln!(toml, "# Список источников возбуждения").unwrap();
+    writeln!(toml, "[sources]").unwrap();
+    for (x_norm, y_norm) in sources {
+        let x = x_norm * modelling.sizex;
+        let y = y_norm * modelling.sizey;
+        
+        writeln!(toml, "  [[sources.cylindrical]]").unwrap();
+        writeln!(toml, "  x = {}", x).unwrap();
+        writeln!(toml, "  y = {}", y).unwrap();
+        writeln!(toml, "  type = \"sin\"").unwrap();
+        writeln!(toml, "  param1 = \"...\"").unwrap();
+        writeln!(toml, "  param2 = \"...\"").unwrap();
+        writeln!(toml).unwrap();
+    }
+    
+    toml
 }
 
-/// Проверяет, относится ли путь к автоматически созданному временному файлу.
-pub fn is_generated_temp_config(path: &Path) -> bool {
-    if !path.starts_with(std::env::temp_dir()) {
-        return false;
-    }
-    match path.file_name().and_then(|name| name.to_str()) {
-        Some(name) => name.starts_with(TEMP_CONFIG_PREFIX),
-        None => false,
-    }
-}
-
-/// Возвращает путь к конфигурационному файлу.
-/// Если путь не задан через переменную окружения, создаёт новый
-/// с 8 случайными символами в имени и сохраняет его в окружении.
-pub fn ensure_temp_config_path() -> PathBuf {
-    if let Some(existing) = current_config_path() {
-        return existing;
-    }
-    let random_suffix: String = thread_rng()
-        .sample_iter(&Alphanumeric)
-        .take(TEMP_CONFIG_SUFFIX_LEN)
-        .map(char::from)
-        .collect();
-
-    let filename = format!("{}{}.toml", TEMP_CONFIG_PREFIX, random_suffix);
-    let path = std::env::temp_dir().join(filename);
-    set_current_config_path(&path);
-    path
+/// Сохраняет TOML-конфигурацию в файл
+pub fn save_config_to_file(path: &Path, content: &str) -> std::io::Result<()> {
+    std::fs::write(path, content)
 }
 
 /// Секция [modelling]
@@ -223,74 +272,30 @@ pub fn load_config(path: impl AsRef<std::path::Path>) -> anyhow::Result<Config> 
     Ok(cfg)
 }
 
-/// Конвертирует список прямоугольников из метров -> нормализованные координаты (0..1)
-pub fn rectangles_m_to_normalized(
-    rects_m: &[RectangleDef],
-    sizex: f32,
-    sizey: f32,
-) -> Vec<((f32, f32), (f32, f32))> {
-    rects_m
-        .iter()
-        .map(|r| {
-            let nx1 = r.x1 / sizex;
-            let ny1 = r.y1 / sizey;
-            let nx2 = r.x2 / sizex;
-            let ny2 = r.y2 / sizey;
-            ((nx1, ny1), (nx2, ny2))
-        })
-        .collect()
-}
-
-/// Конвертирует список зондов из метров -> нормализованные координаты (0..1)
-pub fn probes_m_to_normalized(probes_m: &[ProbeDef], sizex: f32, sizey: f32) -> Vec<(f32, f32)> {
-    probes_m
-        .iter()
-        .map(|p| {
-            let nx = p.x / sizex;
-            let ny = p.y / sizey;
-            (nx, ny)
-        })
-        .collect()
-}
-
-/// Конвертирует список цилиндрических источников из метров -> нормализованные координаты (0..1)
-pub fn cylindrical_sources_m_to_normalized(
-    sources_m: &[CylindricalSourceDef],
-    sizex: f32,
-    sizey: f32,
-) -> Vec<(f32, f32)> {
-    sources_m
-        .iter()
-        .map(|s| {
-            let nx = s.x / sizex;
-            let ny = s.y / sizey;
-            (nx, ny)
-        })
-        .collect()
-}
-
-/// Конвертирует список плоских волн из метров -> нормализованные координаты (0..1)
-#[allow(unused)]
-pub fn planewave_sources_m_to_normalized(
-    sources_m: &[PlaneWaveSourceDef],
-    sizex: f32,
-    sizey: f32,
-) -> Vec<((f32, f32), (f32, f32))> {
-    sources_m
-        .iter()
-        .map(|s| {
-            let nx1 = s.x1 / sizex;
-            let ny1 = s.y1 / sizey;
-            let nx2 = s.x2 / sizex;
-            let ny2 = s.y2 / sizey;
-            ((nx1, ny1), (nx2, ny2))
-        })
-        .collect()
-}
+// Функции конвертации координат больше не нужны - конвертация происходит в main.rs
 
 /// Типы объектов для проекта
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ObjectType {
+    Rectangle,
+    Source,
+    Probe,
+}
+
+/// Тип элемента в боковой панели
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SidebarItemType {
+    Rectangle,
+    Source,
+    Probe,
+}
+
+/// Тип активного диалога (зарезервирован для будущего использования модальных окон)
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActiveDialog {
+    None,
+    ProjectSettings,
     Rectangle,
     Source,
     Probe,
@@ -340,6 +345,7 @@ impl Default for ProjectSettings {
 
 impl ProjectSettings {
     /// Создаёт параметры проекта на основе загруженной конфигурации.
+    #[allow(dead_code)]
     pub fn from_config(cfg: &Config) -> Self {
         let mut objects = Vec::new();
 
@@ -395,6 +401,8 @@ impl ProjectSettings {
     }
 
     /// Преобразует текущие настройки в TOML-строку.
+    /// Может использоваться для экспорта конфигурации в файл.
+    #[allow(dead_code)]
     pub fn to_toml_string(&self) -> String {
         let mut toml_content = String::new();
         let description = if self.description.is_empty() {
